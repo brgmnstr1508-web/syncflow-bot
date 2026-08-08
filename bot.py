@@ -29,7 +29,7 @@ giga = GigaChat(
     credentials=GIGACHAT_AUTH_KEY,
     scope=GIGACHAT_SCOPE,
     verify_ssl_certs=False,
-    model="GigaChat"
+    model="GigaChat-3-Ultra"
 )
 
 
@@ -316,7 +316,22 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         response = giga.chat(request)
         ai_reply = response.choices[0].message.content
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет все текстовые сообщения (кроме команд) с логированием"""
+    if update.message and update.message.text:
+        text = update.message.text
+        user_name = update.message.from_user.first_name
+        user_id = update.message.from_user.id
+        chat_id = update.message.chat_id
+        chat_type = update.message.chat.type  # group, supergroup, private
 
+        # Логируем ВСЕ сообщения (даже команды)
+        logger.info(f"🔍 ВИЖУ СООБЩЕНИЕ: от {user_name} (ID: {user_id}) в чате {chat_id} (тип: {chat_type}): {text[:50]}...")
+
+        # Сохраняем только если это НЕ команда
+        if not text.startswith('/'):
+            save_message(chat_id, user_name, text)
+            logger.info(f"📩 Сохранено в БД: {user_name}: {text[:50]}...")
         formatted_reply = format_digest(ai_reply)
 
         await update.message.reply_text(f"📋 **Дайджест:**\n\n{formatted_reply}")
@@ -329,15 +344,6 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ОБРАБОТЧИК ТЕКСТА
 # ============================================
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message and update.message.text:
-        text = update.message.text
-        user_name = update.message.from_user.first_name
-        chat_id = update.message.chat_id
-
-        if not text.startswith('/'):
-            logger.info(f"📩 Сохранено: {user_name}: {text[:50]}...")
-            save_message(chat_id, user_name, text)
 
 
 # ============================================
@@ -349,8 +355,7 @@ def main():
 
     request = HTTPXRequest(
         connect_timeout=30.0,
-        read_timeout=30.0,
-        write_timeout=30.0,
+        read_timeout=30.0,        write_timeout=30.0,
     )
 
     app = Application.builder().token(TOKEN).request(request).build()
