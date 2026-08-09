@@ -19,17 +19,19 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# --- Инициализация GigaChat ---
 giga = GigaChat(
     credentials=GIGACHAT_AUTH_KEY,
     scope=GIGACHAT_SCOPE,
     verify_ssl_certs=False,
-    model="GigaChat-3-Ultra"
+    model="GigaChat"  # Оставляем базовую модель, так как GigaChat-3-Ultra может быть недоступна
 )
 
 
@@ -149,15 +151,13 @@ def format_digest(text):
 
 
 # ============================================
-# ОТПРАВКА ДАЙДЖЕСТА (С ПОДРОБНЫМИ ЛОГАМИ)
+# ОТПРАВКА ДАЙДЖЕСТА
 # ============================================
 
 async def send_daily_digest(app: Application = None):
     global APP_INSTANCE
 
-    logger.info("=" * 50)
     logger.info("📢 ЗАПУЩЕНА ФУНКЦИЯ send_daily_digest()")
-    logger.info("=" * 50)
 
     if app is None:
         app = APP_INSTANCE
@@ -166,24 +166,17 @@ async def send_daily_digest(app: Application = None):
         logger.error("❌ APP_INSTANCE не инициализирован")
         return
 
-    logger.info("✅ APP_INSTANCE найден")
-
-    # 1. Проверяем подписчиков
     users = load_users()
     logger.info(f"📊 Загружено подписчиков: {len(users)}")
 
     if not users:
-        logger.warning("❌ Нет подписчиков! Напишите /subscribe")
+        logger.warning("❌ Нет подписчиков!")
         return
 
-    logger.info(f"✅ Есть {len(users)} подписчиков: {users}")
-
-    # 2. Проверяем сообщения
     recent_messages = get_recent_messages(24)
     logger.info(f"📝 Найдено сообщений за 24 часа: {len(recent_messages)}")
 
     if not recent_messages:
-        logger.warning("❌ Нет сообщений за 24 часа")
         for user_id in users:
             try:
                 await app.bot.send_message(
@@ -195,12 +188,9 @@ async def send_daily_digest(app: Application = None):
                 logger.error(f"❌ Ошибка отправки: {e}")
         return
 
-    # 3. Формируем запрос к GigaChat
     messages_text = ""
     for msg in recent_messages[-30:]:
         messages_text += f"{msg['user']}: {msg['text']}\n"
-
-    logger.info(f"📝 Отправляю в GigaChat {len(recent_messages[-30:])} сообщений")
 
     system_prompt = "Выдели задачи из диалога. Укажи исполнителя, действие и срок. Отвечай кратко, каждую задачу с новой строки."
     user_prompt = f"Переписка за сутки:\n\n{messages_text}\n\nВыдели задачи."
@@ -217,11 +207,8 @@ async def send_daily_digest(app: Application = None):
         )
         response = giga.chat(request)
         ai_reply = response.choices[0].message.content
-        logger.info(f"✅ GigaChat ответил: {len(ai_reply)} символов")
-
         formatted_reply = format_digest(ai_reply)
 
-        # 4. Отправляем каждому подписчику
         for user_id in users:
             try:
                 await app.bot.send_message(
@@ -234,8 +221,6 @@ async def send_daily_digest(app: Application = None):
 
     except Exception as e:
         logger.error(f"❌ Ошибка GigaChat: {e}")
-
-    logger.info("=" * 50)
 
 
 # ============================================
@@ -316,22 +301,6 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         response = giga.chat(request)
         ai_reply = response.choices[0].message.content
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохраняет все текстовые сообщения (кроме команд) с логированием"""
-    if update.message and update.message.text:
-        text = update.message.text
-        user_name = update.message.from_user.first_name
-        user_id = update.message.from_user.id
-        chat_id = update.message.chat_id
-        chat_type = update.message.chat.type  # group, supergroup, private
-
-        # Логируем ВСЕ сообщения (даже команды)
-        logger.info(f"🔍 ВИЖУ СООБЩЕНИЕ: от {user_name} (ID: {user_id}) в чате {chat_id} (тип: {chat_type}): {text[:50]}...")
-
-        # Сохраняем только если это НЕ команда
-        if not text.startswith('/'):
-            save_message(chat_id, user_name, text)
-            logger.info(f"📩 Сохранено в БД: {user_name}: {text[:50]}...")
         formatted_reply = format_digest(ai_reply)
 
         await update.message.reply_text(f"📋 **Дайджест:**\n\n{formatted_reply}")
@@ -341,9 +310,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================
-# ОБРАБОТЧИК ТЕКСТА
+# ОБРАБОТЧИК ТЕКСТА (ГЛАВНАЯ ФУНКЦИЯ!)
 # ============================================
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет все текстовые сообщения (кроме команд) с логированием"""
+    if update.message and update.message.text:
+        text = update.message.text
+        user_name = update.message.from_user.first_name
+        user_id = update.message.from_user.id
+        chat_id = update.message.chat_id
+        chat_type = update.message.chat.type
+
+        # Логируем ВСЕ сообщения
+        logger.info(f"🔍 ВИЖУ СООБЩЕНИЕ: от {user_name} (ID: {user_id}) в чате {chat_id} (тип: {chat_type}): {text[:50]}...")
+
+        # Сохраняем только если это НЕ команда
+        if not text.startswith('/'):
+            save_message(chat_id, user_name, text)
+            logger.info(f"📩 Сохранено в БД: {user_name}: {text[:50]}...")
 
 
 # ============================================
@@ -355,7 +340,8 @@ def main():
 
     request = HTTPXRequest(
         connect_timeout=30.0,
-        read_timeout=30.0,        write_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
     )
 
     app = Application.builder().token(TOKEN).request(request).build()
