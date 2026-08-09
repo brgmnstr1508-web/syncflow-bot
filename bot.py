@@ -31,7 +31,7 @@ giga = GigaChat(
     credentials=GIGACHAT_AUTH_KEY,
     scope=GIGACHAT_SCOPE,
     verify_ssl_certs=False,
-    model="GigaChat"  # Оставляем базовую модель, так как GigaChat-3-Ultra может быть недоступна
+    model="GigaChat-3-Ultra"  # Оставляем базовую модель, так как GigaChat-3-Ultra может быть недоступна
 )
 
 
