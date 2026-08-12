@@ -12,6 +12,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
+import asyncio
 
 load_dotenv()
 
@@ -368,9 +369,13 @@ def main():
 
     scheduler = BackgroundScheduler()
 
+    # Вспомогательная функция для запуска асинхронных задач
+    def run_async_job(app):
+        asyncio.create_task(send_daily_digest(app))
+
     # Тестовый запуск через 30 секунд
     scheduler.add_job(
-        send_daily_digest,
+        run_async_job,  # <-- заменил send_daily_digest на run_async_job
         'interval',
         seconds=30,
         args=[app],
@@ -382,7 +387,7 @@ def main():
 
     # Регулярный запуск в 9:00
     scheduler.add_job(
-        send_daily_digest,
+        run_async_job,  # <-- заменил send_daily_digest на run_async_job
         CronTrigger(hour=9, minute=0),
         args=[app],
         id='daily_digest',
