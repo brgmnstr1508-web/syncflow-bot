@@ -369,9 +369,11 @@ def main():
 
     scheduler = BackgroundScheduler()
 
-    # Вспомогательная функция для запуска асинхронных задач
+    # Получаем основной цикл событий
+    loop = asyncio.get_event_loop()
+
     def run_async_job(app):
-        asyncio.create_task(send_daily_digest(app))
+        asyncio.run_coroutine_threadsafe(send_daily_digest(app), loop)
 
     # Тестовый запуск через 30 секунд
     scheduler.add_job(
