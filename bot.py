@@ -375,17 +375,17 @@ def main():
     def run_async_job(app):
         asyncio.run_coroutine_threadsafe(send_daily_digest(app), loop)
 
-    # Тестовый запуск через 30 секунд
-    scheduler.add_job(
-        run_async_job,  # <-- заменил send_daily_digest на run_async_job
-        'interval',
-        seconds=30,
-        args=[app],
-        id='test_digest',
-        replace_existing=True,
-        next_run_time=datetime.now() + timedelta(seconds=30)
-    )
-    print("🧪 Тестовый дайджест запланирован через 30 секунд")
+    # # Тестовый запуск через 30 секунд
+    # scheduler.add_job(
+    #     run_async_job,  # <-- заменил send_daily_digest на run_async_job
+    #     'interval',
+    #     seconds=30,
+    #     args=[app],
+    #     id='test_digest',
+    #     replace_existing=True,
+    #     next_run_time=datetime.now() + timedelta(seconds=30)
+    # )
+    # print("🧪 Тестовый дайджест запланирован через 30 секунд")
 
     # Регулярный запуск в 9:00
     scheduler.add_job(
