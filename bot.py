@@ -17,19 +17,19 @@ from datetime import datetime, timedelta
 import re
 
 
-def update_relative_dates(text, msg_date):
-    """
-    Заменяет относительные даты в тексте на актуальные
-    относительно текущего дня.
-    """
+def update_relative_dates(def update_relative_dates(text, msg_date):
     today = datetime.now().date()
     msg_date_obj = datetime.fromisoformat(msg_date).date()
 
-    delta = (today - msg_date_obj).days
+    delta = (today - msg_date_obj).days  # на сколько дней сообщение старше сегодня
+
+    # Логика замены:
+    # Если сообщение было вчера (delta=1), то "завтра" → "сегодня" (сдвиг на -1)
+    # Если сообщение было сегодня (delta=0), то "завтра" → "завтра" (сдвиг на 0)
 
     replacements = {
-        'завтра': delta,
-        'послезавтра': delta - 1,
+        'завтра': delta - 1,          # исправлено!
+        'послезавтра': delta - 2,
         'вчера': delta + 1,
         'позавчера': delta + 2,
     }
