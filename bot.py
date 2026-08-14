@@ -13,6 +13,39 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
 import asyncio
+from datetime import datetime, timedelta
+import re
+
+
+def update_relative_dates(text, msg_date):
+    """
+    Заменяет относительные даты в тексте на актуальные
+    относительно текущего дня.
+    """
+    today = datetime.now().date()
+    msg_date_obj = datetime.fromisoformat(msg_date).date()
+
+    delta = (today - msg_date_obj).days
+
+    replacements = {
+        'завтра': delta,
+        'послезавтра': delta - 1,
+        'вчера': delta + 1,
+        'позавчера': delta + 2,
+    }
+
+    def replace_word(match):
+        word = match.group(0).lower()
+        if word in replacements:
+            days_diff = replacements[word]
+            new_date = today + timedelta(days=days_diff)
+            return new_date.strftime('%d.%m.%Y')
+        return match.group(0)
+
+    pattern = r'\b(завтра|послезавтра|вчера|позавчера)\b'
+    new_text = re.sub(pattern, replace_word, text, flags=re.IGNORECASE)
+
+    return new_text
 
 load_dotenv()
 
@@ -191,7 +224,8 @@ async def send_daily_digest(app: Application = None):
 
     messages_text = ""
     for msg in recent_messages[-30:]:
-        messages_text += f"{msg['user']}: {msg['text']}\n"
+        processed_text = update_relative_dates(msg['text'], msg['time'])
+        messages_text += f"{msg['user']}: {processed_text}\n"
 
     system_prompt = (
         "Ты — ИИ-помощник для анализа рабочих переписок. Внимательно прочитай диалог и выдели все задачи. "
@@ -291,7 +325,8 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     messages_text = ""
     for msg in recent_messages[-30:]:
-        messages_text += f"{msg['user']}: {msg['text']}\n"
+        processed_text = update_relative_dates(msg['text'], msg['time'])
+        messages_text += f"{msg['user']}: {processed_text}\n"
 
     system_prompt = (
         "Ты — ИИ-помощник для анализа рабочих переписок. Внимательно прочитай диалог и выдели все задачи. "
