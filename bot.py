@@ -13,9 +13,32 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
 import asyncio
-from datetime import datetime, timedelta
 import re
 
+load_dotenv()
+
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
+GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# --- Инициализация GigaChat ---
+giga = GigaChat(
+    credentials=GIGACHAT_AUTH_KEY,
+    scope=GIGACHAT_SCOPE,
+    verify_ssl_certs=False,
+    model="GigaChat-3-Ultra"
+)
+
+
+# ============================================
+# ФУНКЦИЯ ЗАМЕНЫ ДАТ
+# ============================================
 
 def update_relative_dates(text, msg_date):
     today = datetime.now().date()
@@ -43,37 +66,22 @@ def update_relative_dates(text, msg_date):
 
     return new_text
 
-load_dotenv()
-
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
-GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# --- Инициализация GigaChat ---
-giga = GigaChat(
-    credentials=GIGACHAT_AUTH_KEY,
-    scope=GIGACHAT_SCOPE,
-    verify_ssl_certs=False,
-    model="GigaChat-3-Ultra"  # Оставляем базовую модель, так как GigaChat-3-Ultra может быть недоступна
-)
-
 
 # ============================================
-# БАЗА ДАННЫХ
+# БАЗА ДАННЫХ (РАЗДЕЛЬНО ПО ЧАТАМ)
 # ============================================
+
+def get_messages_file(chat_id):
+    return f"messages_{chat_id}.json"
+
 
 def save_message(chat_id, user_name, text):
+    filename = get_messages_file(chat_id)
+
     messages = []
-    if os.path.exists('messages.json'):
+    if os.path.exists(filename):
         try:
-            with open('messages.json', 'r', encoding='utf-8') as f:
+            with open(filename, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
                 if content:
                     messages = json.loads(content)
@@ -81,20 +89,23 @@ def save_message(chat_id, user_name, text):
             messages = []
 
     messages.append({
-        'chat_id': chat_id,
         'user': user_name,
         'text': text,
         'time': datetime.now().isoformat()
     })
-    with open('messages.json', 'w', encoding='utf-8') as f:
+
+    with open(filename, 'w', encoding='utf-8') as f:
         json.dump(messages, f, ensure_ascii=False, indent=4)
 
 
-def get_recent_messages(hours=24):
-    if not os.path.exists('messages.json'):
+def get_recent_messages(chat_id, hours=24):
+    filename = get_messages_file(chat_id)
+
+    if not os.path.exists(filename):
         return []
+
     try:
-        with open('messages.json', 'r', encoding='utf-8') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             content = f.read().strip()
             if not content:
                 return []
@@ -104,6 +115,7 @@ def get_recent_messages(hours=24):
 
     threshold = datetime.now() - timedelta(hours=hours)
     recent = []
+
     for msg in all_messages:
         try:
             msg_time = datetime.fromisoformat(msg['time'])
@@ -111,6 +123,7 @@ def get_recent_messages(hours=24):
                 recent.append(msg)
         except:
             continue
+
     return recent
 
 
@@ -181,7 +194,7 @@ def format_digest(text):
 
 
 # ============================================
-# ОТПРАВКА ДАЙДЖЕСТА
+# ОТПРАВКА ДАЙДЖЕСТА (РАЗДЕЛЬНО ПО ЧАТАМ)
 # ============================================
 
 async def send_daily_digest(app: Application = None):
@@ -203,60 +216,58 @@ async def send_daily_digest(app: Application = None):
         logger.warning("❌ Нет подписчиков!")
         return
 
-    recent_messages = get_recent_messages(24)
-    logger.info(f"📝 Найдено сообщений за 24 часа: {len(recent_messages)}")
+    for chat_id in users:
+        logger.info(f"🔄 Обрабатываю чат {chat_id}")
 
-    if not recent_messages:
-        for user_id in users:
+        recent_messages = get_recent_messages(chat_id, 24)
+        logger.info(f"📝 Найдено сообщений за 24 часа в чате {chat_id}: {len(recent_messages)}")
+
+        if not recent_messages:
             try:
                 await app.bot.send_message(
-                    chat_id=user_id,
+                    chat_id=chat_id,
                     text="🌅 **Доброе утро!**\n\nЗа последние 24 часа не было ни одного сообщения."
                 )
-                logger.info(f"✅ Отправлено пустое сообщение {user_id}")
+                logger.info(f"✅ Отправлено пустое сообщение в чат {chat_id}")
             except Exception as e:
-                logger.error(f"❌ Ошибка отправки: {e}")
-        return
+                logger.error(f"❌ Ошибка отправки в чат {chat_id}: {e}")
+            continue
 
-    messages_text = ""
-    for msg in recent_messages[-30:]:
-        processed_text = update_relative_dates(msg['text'], msg['time'])
-        messages_text += f"{msg['user']}: {processed_text}\n"
+        messages_text = ""
+        for msg in recent_messages[-30:]:
+            processed_text = update_relative_dates(msg['text'], msg['time'])
+            messages_text += f"{msg['user']}: {processed_text}\n"
 
-    system_prompt = (
-        "Ты — ИИ-помощник для анализа рабочих переписок. Внимательно прочитай диалог и выдели все задачи. "
-        "Для каждой задачи укажи исполнителя (если упомянут), действие и срок. "
-        "ВСЕГДА выдавай ответ строго в виде нумерованного списка, начиная с '1.', '2.' и т.д. "
-        "Если задач нет — напиши 'Задач не найдено'."
-    )
-    user_prompt = f"Переписка за сутки:\n\n{messages_text}\n\nВыдели задачи."
-
-    try:
-        logger.info("🔄 Отправляю запрос в GigaChat...")
-        request = Chat(
-            messages=[
-                Messages(role=MessagesRole.SYSTEM, content=system_prompt),
-                Messages(role=MessagesRole.USER, content=user_prompt)
-            ],
-            temperature=0.7,
-            max_tokens=500
+        system_prompt = (
+            "Ты — ИИ-помощник для анализа рабочих переписок. Внимательно прочитай диалог и выдели все задачи. "
+            "Для каждой задачи укажи исполнителя (если упомянут), действие и срок. "
+            "ВСЕГДА выдавай ответ строго в виде нумерованного списка, начиная с '1.', '2.' и т.д. "
+            "Если задач нет — напиши 'Задач не найдено'."
         )
-        response = giga.chat(request)
-        ai_reply = response.choices[0].message.content
-        formatted_reply = format_digest(ai_reply)
+        user_prompt = f"Переписка за сутки:\n\n{messages_text}\n\nВыдели задачи."
 
-        for user_id in users:
-            try:
-                await app.bot.send_message(
-                    chat_id=user_id,
-                    text=f"🌅 **Дайджест:**\n\n{formatted_reply}"
-                )
-                logger.info(f"✅ Дайджест отправлен {user_id}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки {user_id}: {e}")
+        try:
+            logger.info(f"🔄 Отправляю запрос в GigaChat для чата {chat_id}...")
+            request = Chat(
+                messages=[
+                    Messages(role=MessagesRole.SYSTEM, content=system_prompt),
+                    Messages(role=MessagesRole.USER, content=user_prompt)
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+            response = giga.chat(request)
+            ai_reply = response.choices[0].message.content
+            formatted_reply = format_digest(ai_reply)
 
-    except Exception as e:
-        logger.error(f"❌ Ошибка GigaChat: {e}")
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=f"🌅 **Дайджест:**\n\n{formatted_reply}"
+            )
+            logger.info(f"✅ Дайджест отправлен в чат {chat_id}")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка для чата {chat_id}: {e}")
 
 
 # ============================================
@@ -314,9 +325,10 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("✅ /digest")
     await update.message.reply_text("🧠 Обрабатываю последние сообщения...")
 
-    recent_messages = get_recent_messages(48)
+    chat_id = update.message.chat_id
+    recent_messages = get_recent_messages(chat_id, 48)
     if not recent_messages:
-        await update.message.reply_text("За последние 48 часов нет сообщений.")
+        await update.message.reply_text("В этом чате нет сообщений за последние 48 часов.")
         return
 
     messages_text = ""
@@ -352,11 +364,10 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================
-# ОБРАБОТЧИК ТЕКСТА (ГЛАВНАЯ ФУНКЦИЯ!)
+# ОБРАБОТЧИК ТЕКСТА
 # ============================================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохраняет все текстовые сообщения (кроме команд) с логированием"""
     if update.message and update.message.text:
         text = update.message.text
         user_name = update.message.from_user.first_name
@@ -364,10 +375,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.message.chat_id
         chat_type = update.message.chat.type
 
-        # Логируем ВСЕ сообщения
-        logger.info(f"🔍 ВИЖУ СООБЩЕНИЕ: от {user_name} (ID: {user_id}) в чате {chat_id} (тип: {chat_type}): {text[:50]}...")
+        logger.info(
+            f"🔍 ВИЖУ СООБЩЕНИЕ: от {user_name} (ID: {user_id}) в чате {chat_id} (тип: {chat_type}): {text[:50]}...")
 
-        # Сохраняем только если это НЕ команда
         if not text.startswith('/'):
             save_message(chat_id, user_name, text)
             logger.info(f"📩 Сохранено в БД: {user_name}: {text[:50]}...")
@@ -400,27 +410,13 @@ def main():
 
     scheduler = BackgroundScheduler()
 
-    # Получаем основной цикл событий
     loop = asyncio.get_event_loop()
 
     def run_async_job(app):
         asyncio.run_coroutine_threadsafe(send_daily_digest(app), loop)
 
-    # # Тестовый запуск через 30 секунд
-    # scheduler.add_job(
-    #     run_async_job,  # <-- заменил send_daily_digest на run_async_job
-    #     'interval',
-    #     seconds=30,
-    #     args=[app],
-    #     id='test_digest',
-    #     replace_existing=True,
-    #     next_run_time=datetime.now() + timedelta(seconds=30)
-    # )
-    # print("🧪 Тестовый дайджест запланирован через 30 секунд")
-
-    # Регулярный запуск в 9:00
     scheduler.add_job(
-        run_async_job,  # <-- заменил send_daily_digest на run_async_job
+        run_async_job,
         CronTrigger(hour=9, minute=0),
         args=[app],
         id='daily_digest',
