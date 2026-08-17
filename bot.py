@@ -27,13 +27,53 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Инициализация GigaChat ---
+# ============================================
+# ИНИЦИАЛИЗАЦИЯ GIGACHAT
+# ============================================
+
 giga = GigaChat(
     credentials=GIGACHAT_AUTH_KEY,
     scope=GIGACHAT_SCOPE,
     verify_ssl_certs=False,
     model="GigaChat-3-Ultra"
 )
+
+# ============================================
+# РАБОТА С КОНФИГУРАЦИЕЙ (НАСТРОЙКИ ЧАТОВ)
+# ============================================
+
+CONFIG_FILE = "config.json"
+
+
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        return {}
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            if not content:
+                return {}
+            return json.loads(content)
+    except:
+        return {}
+
+
+def save_config(config):
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=4)
+
+
+def get_config_for_chat(chat_id):
+    config = load_config()
+    return config.get(str(chat_id), {})
+
+
+def set_config_for_chat(chat_id, key, value):
+    config = load_config()
+    if str(chat_id) not in config:
+        config[str(chat_id)] = {}
+    config[str(chat_id)][key] = value
+    save_config(config)
 
 
 # ============================================
@@ -163,7 +203,7 @@ def format_digest(text):
 
 
 # ============================================
-# ОТПРАВКА ДАЙДЖЕСТА (РАЗДЕЛЬНО ПО ЧАТАМ)
+# ОТПРАВКА ДАЙДЖЕСТА
 # ============================================
 
 async def send_daily_digest(app: Application = None):
@@ -179,32 +219,39 @@ async def send_daily_digest(app: Application = None):
         return
 
     users = load_users()
-    logger.info(f"📊 Загружено подписчиков: {len(users)}")
-
     if not users:
         logger.warning("❌ Нет подписчиков!")
         return
 
     for chat_id in users:
-        logger.info(f"🔄 Обрабатываю чат {chat_id}")
+        config = get_config_for_chat(chat_id)
+        tasks_chat = config.get('tasks_chat')
+        digest_chat = config.get('digest_chat')
 
-        recent_messages = get_recent_messages(chat_id, 24)
-        logger.info(f"📝 Найдено сообщений за 24 часа в чате {chat_id}: {len(recent_messages)}")
+        # Если настройки не заданы — используем текущий чат как tasks_chat и digest_chat
+        if not tasks_chat:
+            tasks_chat = chat_id
+        if not digest_chat:
+            digest_chat = chat_id
+
+        logger.info(f"🔄 Обрабатываю настройки: задачи из {tasks_chat}, дайджест в {digest_chat}")
+
+        recent_messages = get_recent_messages(tasks_chat, 24)
+        logger.info(f"📝 Найдено сообщений за 24 часа в чате {tasks_chat}: {len(recent_messages)}")
 
         if not recent_messages:
             try:
                 await app.bot.send_message(
-                    chat_id=chat_id,
+                    chat_id=digest_chat,
                     text="🌅 **Доброе утро!**\n\nЗа последние 24 часа не было ни одного сообщения."
                 )
-                logger.info(f"✅ Отправлено пустое сообщение в чат {chat_id}")
+                logger.info(f"✅ Отправлено пустое сообщение в чат {digest_chat}")
             except Exception as e:
-                logger.error(f"❌ Ошибка отправки в чат {chat_id}: {e}")
+                logger.error(f"❌ Ошибка отправки в чат {digest_chat}: {e}")
             continue
 
         messages_text = ""
         for msg in recent_messages[-30:]:
-            # Замена дат ОТКЛЮЧЕНА — используем оригинальный текст
             messages_text += f"{msg['user']}: {msg['text']}\n"
 
         system_prompt = (
@@ -216,7 +263,7 @@ async def send_daily_digest(app: Application = None):
         user_prompt = f"Переписка за сутки:\n\n{messages_text}\n\nВыдели задачи."
 
         try:
-            logger.info(f"🔄 Отправляю запрос в GigaChat для чата {chat_id}...")
+            logger.info(f"🔄 Отправляю запрос в GigaChat для чата {tasks_chat}...")
             request = Chat(
                 messages=[
                     Messages(role=MessagesRole.SYSTEM, content=system_prompt),
@@ -230,13 +277,13 @@ async def send_daily_digest(app: Application = None):
             formatted_reply = format_digest(ai_reply)
 
             await app.bot.send_message(
-                chat_id=chat_id,
+                chat_id=digest_chat,
                 text=f"🌅 **Дайджест:**\n\n{formatted_reply}"
             )
-            logger.info(f"✅ Дайджест отправлен в чат {chat_id}")
+            logger.info(f"✅ Дайджест отправлен в чат {digest_chat}")
 
         except Exception as e:
-            logger.error(f"❌ Ошибка для чата {chat_id}: {e}")
+            logger.error(f"❌ Ошибка для чата {tasks_chat}: {e}")
 
 
 # ============================================
@@ -258,8 +305,26 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/unsubscribe — отписаться\n"
         "/status — проверить подписку\n"
         "/digest — получить дайджест сейчас\n"
-        "/test — тестовый дайджест"
+        "/test — тестовый дайджест\n"
+        "/set_tasks_chat — установить этот чат как чат для задач\n"
+        "/set_digest_chat — установить этот чат как чат для дайджестов"
     )
+
+
+async def cmd_set_tasks_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    logger.info(f"✅ /set_tasks_chat от {chat_id}")
+    set_config_for_chat(chat_id, 'tasks_chat', chat_id)
+    await update.message.reply_text(
+        "✅ Этот чат установлен как **чат для задач**. Теперь бот будет читать сообщения только отсюда.")
+
+
+async def cmd_set_digest_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    logger.info(f"✅ /set_digest_chat от {chat_id}")
+    set_config_for_chat(chat_id, 'digest_chat', chat_id)
+    await update.message.reply_text(
+        "✅ Этот чат установлен как **чат для дайджестов**. Теперь дайджесты будут приходить сюда.")
 
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -298,17 +363,33 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("✅ /digest")
-    await update.message.reply_text("🧠 Обрабатываю последние сообщения...")
 
     chat_id = update.message.chat_id
-    recent_messages = get_recent_messages(chat_id, 48)
+    config = get_config_for_chat(chat_id)
+    tasks_chat = config.get('tasks_chat')
+    digest_chat = config.get('digest_chat')
+
+    # Если настройки не заданы — используем текущий чат
+    if not tasks_chat:
+        tasks_chat = chat_id
+    if not digest_chat:
+        digest_chat = chat_id
+
+    # Если команда вызвана не в чате дайджестов — предупреждаем
+    if chat_id != digest_chat:
+        await update.message.reply_text(
+            "ℹ️ Команда /digest доступна только в чате, который установлен как чат для дайджестов.\nИспользуйте /set_digest_chat, чтобы установить текущий чат.")
+        return
+
+    await update.message.reply_text("🧠 Обрабатываю последние сообщения...")
+
+    recent_messages = get_recent_messages(tasks_chat, 48)
     if not recent_messages:
-        await update.message.reply_text("В этом чате нет сообщений за последние 48 часов.")
+        await update.message.reply_text(f"В чате задач ({tasks_chat}) нет сообщений за последние 48 часов.")
         return
 
     messages_text = ""
     for msg in recent_messages[-30:]:
-        # Замена дат ОТКЛЮЧЕНА — используем оригинальный текст
         messages_text += f"{msg['user']}: {msg['text']}\n"
 
     system_prompt = (
@@ -353,7 +434,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(
             f"🔍 ВИЖУ СООБЩЕНИЕ: от {user_name} (ID: {user_id}) в чате {chat_id} (тип: {chat_type}): {text[:50]}...")
 
-        if not text.startswith('/'):
+        # Проверяем, есть ли настройки для этого чата
+        config = get_config_for_chat(chat_id)
+        tasks_chat = config.get('tasks_chat')
+
+        # Если настройки нет — используем текущий чат как tasks_chat
+        if not tasks_chat:
+            tasks_chat = chat_id
+
+        # Сохраняем сообщения ТОЛЬКО из чата с задачами
+        if not text.startswith('/') and chat_id == tasks_chat:
             save_message(chat_id, user_name, text)
             logger.info(f"📩 Сохранено в БД: {user_name}: {text[:50]}...")
 
@@ -380,6 +470,8 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("set_tasks_chat", cmd_set_tasks_chat))
+    app.add_handler(CommandHandler("set_digest_chat", cmd_set_digest_chat))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
@@ -409,6 +501,8 @@ def main():
     print("   /status - проверить подписку")
     print("   /test - тестовый дайджест")
     print("   /digest - получить дайджест сейчас")
+    print("   /set_tasks_chat - установить текущий чат как чат для задач")
+    print("   /set_digest_chat - установить текущий чат как чат для дайджестов")
 
     app.run_polling()
 
