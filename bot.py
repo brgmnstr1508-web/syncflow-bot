@@ -137,6 +137,107 @@ def get_recent_messages(chat_id, hours=24):
 
 
 # ============================================
+# СИСТЕМА ЗАДАЧ
+# ============================================
+
+TASKS_FILE = "tasks.json"
+
+
+def load_tasks():
+    if not os.path.exists(TASKS_FILE):
+        return []
+    try:
+        with open(TASKS_FILE, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            if not content:
+                return []
+            return json.loads(content)
+    except:
+        return []
+
+
+def save_tasks(tasks):
+    with open(TASKS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(tasks, f, ensure_ascii=False, indent=4)
+
+
+def get_next_task_id(tasks):
+    if not tasks:
+        return 1
+    return max(t['id'] for t in tasks) + 1
+
+
+def add_task(text, assignee, deadline, chat_id):
+    tasks = load_tasks()
+    task = {
+        'id': get_next_task_id(tasks),
+        'text': text,
+        'assignee': assignee,
+        'deadline': deadline,
+        'status': 'active',
+        'created_at': datetime.now().isoformat(),
+        'chat_id': chat_id
+    }
+    tasks.append(task)
+    save_tasks(tasks)
+    return task
+
+
+def get_tasks_by_chat(chat_id, status=None):
+    tasks = load_tasks()
+    filtered = [t for t in tasks if t.get('chat_id') == chat_id]
+    if status:
+        filtered = [t for t in filtered if t.get('status') == status]
+    return filtered
+
+
+def get_active_tasks(chat_id):
+    tasks = get_tasks_by_chat(chat_id, 'active')
+    today = datetime.now().date()
+    active = []
+    overdue = []
+    for t in tasks:
+        try:
+            deadline = datetime.strptime(t['deadline'], '%Y-%m-%d').date()
+            if deadline < today:
+                overdue.append(t)
+            else:
+                active.append(t)
+        except:
+            active.append(t)
+    return active, overdue
+
+
+def complete_task(task_id):
+    tasks = load_tasks()
+    for t in tasks:
+        if t['id'] == task_id:
+            t['status'] = 'done'
+            save_tasks(tasks)
+            return True
+    return False
+
+
+def delete_task(task_id):
+    tasks = load_tasks()
+    tasks = [t for t in tasks if t['id'] != task_id]
+    save_tasks(tasks)
+    return True
+
+
+def format_tasks_list(tasks, title="📋 **Задачи:**"):
+    if not tasks:
+        return "❌ Задач нет."
+
+    lines = [title]
+    for t in tasks:
+        assignee = f" — {t['assignee']}" if t.get('assignee') else ""
+        deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
+        lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
+    return '\n'.join(lines)
+
+
+# ============================================
 # ПОДПИСЧИКИ
 # ============================================
 
@@ -188,18 +289,26 @@ def remove_user(chat_id):
 APP_INSTANCE = None
 
 
-def format_digest(text):
-    lines = text.split('\n')
-    formatted_lines = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith(('•', '-', '✅', '📌', '*', '1.', '2.', '3.', '4.', '5.', '—')):
-            formatted_lines.append(line)
-        else:
-            formatted_lines.append(f'• {line}')
-    return '\n'.join(formatted_lines)
+def format_digest(active_tasks, overdue_tasks):
+    lines = []
+
+    if active_tasks:
+        lines.append("📋 **Активные задачи:**")
+        for t in active_tasks:
+            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
+            deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
+            lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
+    else:
+        lines.append("✅ Активных задач нет.")
+
+    if overdue_tasks:
+        lines.append("\n❌ **Просроченные задачи:**")
+        for t in overdue_tasks:
+            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
+            deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
+            lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
+
+    return '\n'.join(lines)
 
 
 # ============================================
@@ -225,65 +334,30 @@ async def send_daily_digest(app: Application = None):
 
     for chat_id in users:
         config = get_config_for_chat(chat_id)
-        tasks_chat = config.get('tasks_chat')
-        digest_chat = config.get('digest_chat')
+        digest_chat = config.get('digest_chat', chat_id)
 
-        # Если настройки не заданы — используем текущий чат как tasks_chat и digest_chat
-        if not tasks_chat:
-            tasks_chat = chat_id
-        if not digest_chat:
-            digest_chat = chat_id
+        active_tasks, overdue_tasks = get_active_tasks(chat_id)
 
-        logger.info(f"🔄 Обрабатываю настройки: задачи из {tasks_chat}, дайджест в {digest_chat}")
-
-        recent_messages = get_recent_messages(tasks_chat, 24)
-        logger.info(f"📝 Найдено сообщений за 24 часа в чате {tasks_chat}: {len(recent_messages)}")
-
-        if not recent_messages:
+        if not active_tasks and not overdue_tasks:
             try:
                 await app.bot.send_message(
                     chat_id=digest_chat,
-                    text="🌅 **Доброе утро!**\n\nЗа последние 24 часа не было ни одного сообщения."
+                    text="🌅 **Доброе утро!**\n\nАктивных задач нет. Отличная работа! 🎉"
                 )
-                logger.info(f"✅ Отправлено пустое сообщение в чат {digest_chat}")
+                logger.info(f"✅ Отправлено сообщение об отсутствии задач в чат {digest_chat}")
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки в чат {digest_chat}: {e}")
             continue
 
-        messages_text = ""
-        for msg in recent_messages[-30:]:
-            messages_text += f"{msg['user']}: {msg['text']}\n"
-
-        system_prompt = (
-            "Ты — ИИ-помощник для анализа рабочих переписок. Внимательно прочитай диалог и выдели все задачи. "
-            "Для каждой задачи укажи исполнителя (если упомянут), действие и срок. "
-            "ВСЕГДА выдавай ответ строго в виде нумерованного списка, начиная с '1.', '2.' и т.д. "
-            "Если задач нет — напиши 'Задач не найдено'."
-        )
-        user_prompt = f"Переписка за сутки:\n\n{messages_text}\n\nВыдели задачи."
-
+        digest_text = format_digest(active_tasks, overdue_tasks)
         try:
-            logger.info(f"🔄 Отправляю запрос в GigaChat для чата {tasks_chat}...")
-            request = Chat(
-                messages=[
-                    Messages(role=MessagesRole.SYSTEM, content=system_prompt),
-                    Messages(role=MessagesRole.USER, content=user_prompt)
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
-            response = giga.chat(request)
-            ai_reply = response.choices[0].message.content
-            formatted_reply = format_digest(ai_reply)
-
             await app.bot.send_message(
                 chat_id=digest_chat,
-                text=f"🌅 **Дайджест:**\n\n{formatted_reply}"
+                text=f"🌅 **Дайджест:**\n\n{digest_text}"
             )
             logger.info(f"✅ Дайджест отправлен в чат {digest_chat}")
-
         except Exception as e:
-            logger.error(f"❌ Ошибка для чата {tasks_chat}: {e}")
+            logger.error(f"❌ Ошибка отправки в чат {digest_chat}: {e}")
 
 
 # ============================================
@@ -307,7 +381,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/digest — получить дайджест сейчас\n"
         "/test — тестовый дайджест\n"
         "/set_tasks_chat — установить этот чат как чат для задач\n"
-        "/set_digest_chat — установить этот чат как чат для дайджестов"
+        "/set_digest_chat — установить этот чат как чат для дайджестов\n\n"
+        "📋 **Управление задачами:**\n"
+        "/tasks — показать активные задачи\n"
+        "/tasks overdue — показать просроченные задачи\n"
+        "/tasks all — показать все задачи\n"
+        "/done <id> — отметить задачу выполненной\n"
+        "/delete <id> — удалить задачу"
     )
 
 
@@ -366,61 +446,122 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.message.chat_id
     config = get_config_for_chat(chat_id)
-    tasks_chat = config.get('tasks_chat')
-    digest_chat = config.get('digest_chat')
+    tasks_chat = config.get('tasks_chat', chat_id)
+    digest_chat = config.get('digest_chat', chat_id)
 
-    # Если настройки не заданы — используем текущий чат
-    if not tasks_chat:
-        tasks_chat = chat_id
-    if not digest_chat:
-        digest_chat = chat_id
-
-    # Если команда вызвана не в чате дайджестов — предупреждаем
     if chat_id != digest_chat:
-        await update.message.reply_text(
-            "ℹ️ Команда /digest доступна только в чате, который установлен как чат для дайджестов.\nИспользуйте /set_digest_chat, чтобы установить текущий чат.")
+        await update.message.reply_text("ℹ️ Команда /digest доступна только в чате дайджестов.")
         return
 
-    await update.message.reply_text("🧠 Обрабатываю последние сообщения...")
+    await update.message.reply_text("📋 Собираю задачи...")
 
-    recent_messages = get_recent_messages(tasks_chat, 48)
-    if not recent_messages:
-        await update.message.reply_text(f"В чате задач ({tasks_chat}) нет сообщений за последние 48 часов.")
+    active_tasks, overdue_tasks = get_active_tasks(tasks_chat)
+
+    if not active_tasks and not overdue_tasks:
+        await update.message.reply_text("✅ Активных задач нет. Отличная работа! 🎉")
         return
 
-    messages_text = ""
-    for msg in recent_messages[-30:]:
-        messages_text += f"{msg['user']}: {msg['text']}\n"
-
-    system_prompt = (
-        "Ты — ИИ-помощник для анализа рабочих переписок. Внимательно прочитай диалог и выдели все задачи. "
-        "Для каждой задачи укажи исполнителя (если упомянут), действие и срок. "
-        "ВСЕГДА выдавай ответ строго в виде нумерованного списка, начиная с '1.', '2.' и т.д. "
-        "Если задач нет — напиши 'Задач не найдено'."
-    )
-    user_prompt = f"Переписка:\n\n{messages_text}\n\nВыдели задачи."
-
-    try:
-        request = Chat(
-            messages=[
-                Messages(role=MessagesRole.SYSTEM, content=system_prompt),
-                Messages(role=MessagesRole.USER, content=user_prompt)
-            ],
-            temperature=0.7,
-            max_tokens=500
-        )
-        response = giga.chat(request)
-        ai_reply = response.choices[0].message.content
-        formatted_reply = format_digest(ai_reply)
-
-        await update.message.reply_text(f"📋 **Дайджест:**\n\n{formatted_reply}")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    digest_text = format_digest(active_tasks, overdue_tasks)
+    await update.message.reply_text(f"📋 **Дайджест:**\n\n{digest_text}")
 
 
 # ============================================
-# ОБРАБОТЧИК ТЕКСТА
+# КОМАНДЫ УПРАВЛЕНИЯ ЗАДАЧАМИ
+# ============================================
+
+async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    config = get_config_for_chat(chat_id)
+    tasks_chat = config.get('tasks_chat', chat_id)
+
+    args = context.args
+    if args and args[0].lower() == 'overdue':
+        tasks = get_tasks_by_chat(tasks_chat, 'active')
+        today = datetime.now().date()
+        overdue = []
+        for t in tasks:
+            try:
+                deadline = datetime.strptime(t['deadline'], '%Y-%m-%d').date()
+                if deadline < today:
+                    overdue.append(t)
+            except:
+                continue
+        if overdue:
+            await update.message.reply_text(format_tasks_list(overdue, "❌ **Просроченные задачи:**"))
+        else:
+            await update.message.reply_text("✅ Просроченных задач нет.")
+        return
+
+    if args and args[0].lower() == 'all':
+        tasks = get_tasks_by_chat(tasks_chat)
+        if tasks:
+            await update.message.reply_text(format_tasks_list(tasks, "📋 **Все задачи:**"))
+        else:
+            await update.message.reply_text("❌ Задач нет.")
+        return
+
+    # По умолчанию — активные задачи
+    active_tasks, overdue_tasks = get_active_tasks(tasks_chat)
+    if active_tasks or overdue_tasks:
+        await update.message.reply_text(format_digest(active_tasks, overdue_tasks))
+    else:
+        await update.message.reply_text("✅ Активных задач нет.")
+
+
+async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    config = get_config_for_chat(chat_id)
+    tasks_chat = config.get('tasks_chat', chat_id)
+
+    if not context.args:
+        await update.message.reply_text("⚠️ Укажите ID задачи: `/done 3`")
+        return
+
+    try:
+        task_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ ID должен быть числом.")
+        return
+
+    tasks = load_tasks()
+    task = next((t for t in tasks if t['id'] == task_id and t.get('chat_id') == tasks_chat), None)
+
+    if not task:
+        await update.message.reply_text(f"❌ Задача с ID {task_id} не найдена.")
+        return
+
+    complete_task(task_id)
+    await update.message.reply_text(f"✅ Задача {task_id} отмечена как выполненная!")
+
+
+async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    config = get_config_for_chat(chat_id)
+    tasks_chat = config.get('tasks_chat', chat_id)
+
+    if not context.args:
+        await update.message.reply_text("⚠️ Укажите ID задачи: `/delete 3`")
+        return
+
+    try:
+        task_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ ID должен быть числом.")
+        return
+
+    tasks = load_tasks()
+    task = next((t for t in tasks if t['id'] == task_id and t.get('chat_id') == tasks_chat), None)
+
+    if not task:
+        await update.message.reply_text(f"❌ Задача с ID {task_id} не найдена.")
+        return
+
+    delete_task(task_id)
+    await update.message.reply_text(f"🗑️ Задача {task_id} удалена.")
+
+
+# ============================================
+# ОБРАБОТЧИК ТЕКСТА (АВТОДОБАВЛЕНИЕ ЗАДАЧ)
 # ============================================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -434,18 +575,53 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(
             f"🔍 ВИЖУ СООБЩЕНИЕ: от {user_name} (ID: {user_id}) в чате {chat_id} (тип: {chat_type}): {text[:50]}...")
 
-        # Проверяем, есть ли настройки для этого чата
-        config = get_config_for_chat(chat_id)
-        tasks_chat = config.get('tasks_chat')
-
-        # Если настройки нет — используем текущий чат как tasks_chat
-        if not tasks_chat:
-            tasks_chat = chat_id
-
-        # Сохраняем сообщения ТОЛЬКО из чата с задачами
-        if not text.startswith('/') and chat_id == tasks_chat:
+        if not text.startswith('/'):
             save_message(chat_id, user_name, text)
             logger.info(f"📩 Сохранено в БД: {user_name}: {text[:50]}...")
+
+            # Проверяем, есть ли задача в сообщении (через GigaChat)
+            config = get_config_for_chat(chat_id)
+            tasks_chat = config.get('tasks_chat')
+            if not tasks_chat:
+                tasks_chat = chat_id
+
+            if chat_id == tasks_chat:
+                try:
+                    logger.info("🤖 Проверяю сообщение на наличие задачи...")
+                    system_prompt = (
+                        "Ты — ИИ-помощник. Прочитай сообщение и определи, есть ли в нём задача. "
+                        "Если есть — верни JSON в формате: "
+                        "{'task': true, 'text': 'текст задачи', 'assignee': 'имя исполнителя', 'deadline': 'YYYY-MM-DD'}. "
+                        "Если задачи нет — верни {'task': false}."
+                    )
+                    user_prompt = f"Сообщение: {text}"
+
+                    request = Chat(
+                        messages=[
+                            Messages(role=MessagesRole.SYSTEM, content=system_prompt),
+                            Messages(role=MessagesRole.USER, content=user_prompt)
+                        ],
+                        temperature=0.5,
+                        max_tokens=200
+                    )
+                    response = giga.chat(request)
+                    result_text = response.choices[0].message.content
+
+                    # Пробуем извлечь JSON из ответа
+                    import ast
+                    try:
+                        result = ast.literal_eval(result_text)
+                        if result.get('task'):
+                            assignee = result.get('assignee', '')
+                            deadline = result.get('deadline', '')
+                            task_text = result.get('text', text)
+
+                            add_task(task_text, assignee, deadline, chat_id)
+                            logger.info(f"✅ Задача добавлена: {task_text}")
+                    except:
+                        logger.info("ℹ️ Не удалось распарсить ответ GigaChat как JSON")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при проверке задачи: {e}")
 
 
 # ============================================
@@ -472,6 +648,9 @@ def main():
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("set_tasks_chat", cmd_set_tasks_chat))
     app.add_handler(CommandHandler("set_digest_chat", cmd_set_digest_chat))
+    app.add_handler(CommandHandler("tasks", cmd_tasks))
+    app.add_handler(CommandHandler("done", cmd_done))
+    app.add_handler(CommandHandler("delete", cmd_delete))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
@@ -503,6 +682,11 @@ def main():
     print("   /digest - получить дайджест сейчас")
     print("   /set_tasks_chat - установить текущий чат как чат для задач")
     print("   /set_digest_chat - установить текущий чат как чат для дайджестов")
+    print("   /tasks - показать активные задачи")
+    print("   /tasks overdue - показать просроченные задачи")
+    print("   /tasks all - показать все задачи")
+    print("   /done <id> - отметить задачу выполненной")
+    print("   /delete <id> - удалить задачу")
 
     app.run_polling()
 
