@@ -237,6 +237,28 @@ def format_tasks_list(tasks, title="📋 **Задачи:**"):
     return '\n'.join(lines)
 
 
+def format_digest(active_tasks, overdue_tasks):
+    lines = []
+
+    if active_tasks:
+        lines.append("📋 **Активные задачи:**")
+        for t in active_tasks:
+            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
+            deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
+            lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
+    else:
+        lines.append("✅ Активных задач нет.")
+
+    if overdue_tasks:
+        lines.append("\n❌ **Просроченные задачи:**")
+        for t in overdue_tasks:
+            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
+            deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
+            lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
+
+    return '\n'.join(lines)
+
+
 # ============================================
 # ПОДПИСЧИКИ
 # ============================================
@@ -287,28 +309,6 @@ def remove_user(chat_id):
 
 
 APP_INSTANCE = None
-
-
-def format_digest(active_tasks, overdue_tasks):
-    lines = []
-
-    if active_tasks:
-        lines.append("📋 **Активные задачи:**")
-        for t in active_tasks:
-            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
-            deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
-            lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
-    else:
-        lines.append("✅ Активных задач нет.")
-
-    if overdue_tasks:
-        lines.append("\n❌ **Просроченные задачи:**")
-        for t in overdue_tasks:
-            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
-            deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
-            lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
-
-    return '\n'.join(lines)
 
 
 # ============================================
@@ -383,6 +383,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set_tasks_chat — установить этот чат как чат для задач\n"
         "/set_digest_chat — установить этот чат как чат для дайджестов\n\n"
         "📋 **Управление задачами:**\n"
+        "/add <текст> до <дата> @исполнитель — добавить задачу вручную\n"
         "/tasks — показать активные задачи\n"
         "/tasks overdue — показать просроченные задачи\n"
         "/tasks all — показать все задачи\n"
@@ -464,10 +465,6 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     digest_text = format_digest(active_tasks, overdue_tasks)
     await update.message.reply_text(f"📋 **Дайджест:**\n\n{digest_text}")
 
-
-# ============================================
-# КОМАНДЫ УПРАВЛЕНИЯ ЗАДАЧАМИ
-# ============================================
 
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -560,8 +557,69 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🗑️ Задача {task_id} удалена.")
 
 
+async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    config = get_config_for_chat(chat_id)
+    tasks_chat = config.get('tasks_chat', chat_id)
+
+    if chat_id != tasks_chat:
+        await update.message.reply_text("ℹ️ Команда /add доступна только в чате для задач.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Укажите задачу в формате:\n"
+            "/add Текст задачи до ДАТА @Исполнитель\n\n"
+            "Пример:\n"
+            "/add Подготовить отчёт до 20.08 @Алишер"
+        )
+        return
+
+    text = ' '.join(context.args)
+
+    assignee = ''
+    deadline = ''
+
+    # Ищем дату в формате DD.MM или DD.MM.YYYY
+    date_match = re.search(r'(\d{2}\.\d{2}(?:\.\d{4})?)', text)
+    if date_match:
+        deadline = date_match.group(1)
+        if len(deadline) == 5:
+            deadline = f"{deadline}.{datetime.now().year}"
+        try:
+            deadline_obj = datetime.strptime(deadline, '%d.%m.%Y')
+            deadline = deadline_obj.strftime('%Y-%m-%d')
+        except:
+            deadline = ''
+        text = text.replace(date_match.group(0), '').strip()
+
+    # Ищем исполнителя по @
+    assignee_match = re.search(r'@(\w+)', text)
+    if assignee_match:
+        assignee = assignee_match.group(1)
+        text = text.replace(assignee_match.group(0), '').strip()
+
+    text = text.strip()
+    if not text:
+        await update.message.reply_text("❌ Текст задачи не может быть пустым.")
+        return
+
+    task = add_task(text, assignee, deadline, tasks_chat)
+
+    if task:
+        await update.message.reply_text(
+            f"✅ Задача добавлена!\n\n"
+            f"📌 {task['text']}\n"
+            f"👤 Исполнитель: {task['assignee'] or 'не указан'}\n"
+            f"📅 Срок: {task['deadline'] or 'не указан'}\n"
+            f"🆔 ID: {task['id']}"
+        )
+    else:
+        await update.message.reply_text("❌ Ошибка при добавлении задачи.")
+
+
 # ============================================
-# ОБРАБОТЧИК ТЕКСТА (АВТОДОБАВЛЕНИЕ ЗАДАЧ)
+# ОБРАБОТЧИК ТЕКСТА
 # ============================================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -578,50 +636,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not text.startswith('/'):
             save_message(chat_id, user_name, text)
             logger.info(f"📩 Сохранено в БД: {user_name}: {text[:50]}...")
-
-            # Проверяем, есть ли задача в сообщении (через GigaChat)
-            config = get_config_for_chat(chat_id)
-            tasks_chat = config.get('tasks_chat')
-            if not tasks_chat:
-                tasks_chat = chat_id
-
-            if chat_id == tasks_chat:
-                try:
-                    logger.info("🤖 Проверяю сообщение на наличие задачи...")
-                    system_prompt = (
-                        "Ты — ИИ-помощник. Прочитай сообщение и определи, есть ли в нём задача. "
-                        "Если есть — верни JSON в формате: "
-                        "{'task': true, 'text': 'текст задачи', 'assignee': 'имя исполнителя', 'deadline': 'YYYY-MM-DD'}. "
-                        "Если задачи нет — верни {'task': false}."
-                    )
-                    user_prompt = f"Сообщение: {text}"
-
-                    request = Chat(
-                        messages=[
-                            Messages(role=MessagesRole.SYSTEM, content=system_prompt),
-                            Messages(role=MessagesRole.USER, content=user_prompt)
-                        ],
-                        temperature=0.5,
-                        max_tokens=200
-                    )
-                    response = giga.chat(request)
-                    result_text = response.choices[0].message.content
-
-                    # Пробуем извлечь JSON из ответа
-                    import ast
-                    try:
-                        result = ast.literal_eval(result_text)
-                        if result.get('task'):
-                            assignee = result.get('assignee', '')
-                            deadline = result.get('deadline', '')
-                            task_text = result.get('text', text)
-
-                            add_task(task_text, assignee, deadline, chat_id)
-                            logger.info(f"✅ Задача добавлена: {task_text}")
-                    except:
-                        logger.info("ℹ️ Не удалось распарсить ответ GigaChat как JSON")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка при проверке задачи: {e}")
 
 
 # ============================================
@@ -651,6 +665,7 @@ def main():
     app.add_handler(CommandHandler("tasks", cmd_tasks))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("delete", cmd_delete))
+    app.add_handler(CommandHandler("add", cmd_add))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
@@ -682,6 +697,7 @@ def main():
     print("   /digest - получить дайджест сейчас")
     print("   /set_tasks_chat - установить текущий чат как чат для задач")
     print("   /set_digest_chat - установить текущий чат как чат для дайджестов")
+    print("   /add - добавить задачу вручную")
     print("   /tasks - показать активные задачи")
     print("   /tasks overdue - показать просроченные задачи")
     print("   /tasks all - показать все задачи")
