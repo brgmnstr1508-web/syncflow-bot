@@ -37,37 +37,6 @@ giga = GigaChat(
 
 
 # ============================================
-# ФУНКЦИЯ ЗАМЕНЫ ДАТ
-# ============================================
-
-def update_relative_dates(text, msg_date):
-    today = datetime.now().date()
-    msg_date_obj = datetime.fromisoformat(msg_date).date()
-
-    delta = (today - msg_date_obj).days
-
-    replacements = {
-        'завтра': delta - 1,
-        'послезавтра': delta - 2,
-        'вчера': delta + 1,
-        'позавчера': delta + 2,
-    }
-
-    def replace_word(match):
-        word = match.group(0).lower()
-        if word in replacements:
-            days_diff = replacements[word]
-            new_date = today + timedelta(days=days_diff)
-            return new_date.strftime('%d.%m.%Y')
-        return match.group(0)
-
-    pattern = r'\b(завтра|послезавтра|вчера|позавчера)\b'
-    new_text = re.sub(pattern, replace_word, text, flags=re.IGNORECASE)
-
-    return new_text
-
-
-# ============================================
 # БАЗА ДАННЫХ (РАЗДЕЛЬНО ПО ЧАТАМ)
 # ============================================
 
@@ -235,8 +204,8 @@ async def send_daily_digest(app: Application = None):
 
         messages_text = ""
         for msg in recent_messages[-30:]:
-            processed_text = update_relative_dates(msg['text'], msg['time'])
-            messages_text += f"{msg['user']}: {processed_text}\n"
+            # Замена дат ОТКЛЮЧЕНА — используем оригинальный текст
+            messages_text += f"{msg['user']}: {msg['text']}\n"
 
         system_prompt = (
             "Ты — ИИ-помощник для анализа рабочих переписок. Внимательно прочитай диалог и выдели все задачи. "
@@ -278,6 +247,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("✅ /start")
     await update.message.reply_text(
         "👋 Привет! Я умный Хаос-менеджер.\n\n"
+        "📌 **Как правильно ставить задачи:**\n"
+        "Чтобы бот точно понял срок, пишите **дату** в формате:\n"
+        "`сделать отчёт 20.08`\n"
+        "`встреча 18.08 в 14:00`\n\n"
+        "❌ Избегайте слов 'завтра', 'послезавтра' — бот может их неправильно понять.\n"
+        "✅ Лучше написать конкретную дату — и задача будет точной!\n\n"
         "📌 **Команды:**\n"
         "/subscribe — подписаться на дайджест\n"
         "/unsubscribe — отписаться\n"
@@ -333,8 +308,8 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     messages_text = ""
     for msg in recent_messages[-30:]:
-        processed_text = update_relative_dates(msg['text'], msg['time'])
-        messages_text += f"{msg['user']}: {processed_text}\n"
+        # Замена дат ОТКЛЮЧЕНА — используем оригинальный текст
+        messages_text += f"{msg['user']}: {msg['text']}\n"
 
     system_prompt = (
         "Ты — ИИ-помощник для анализа рабочих переписок. Внимательно прочитай диалог и выдели все задачи. "
