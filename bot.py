@@ -576,11 +576,12 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = ' '.join(context.args)
+    original_text = text  # сохраняем оригинал
 
     assignee = ''
     deadline = ''
 
-    # Ищем дату в формате DD.MM или DD.MM.YYYY
+    # Ищем дату
     date_match = re.search(r'(\d{2}\.\d{2}(?:\.\d{4})?)', text)
     if date_match:
         deadline = date_match.group(1)
@@ -591,20 +592,21 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deadline = deadline_obj.strftime('%Y-%m-%d')
         except:
             deadline = ''
-        text = text.replace(date_match.group(0), '').strip()
+        # НЕ удаляем дату из текста
 
-    # Ищем исполнителя по @
+    # Ищем исполнителя
     assignee_match = re.search(r'@(\w+)', text)
     if assignee_match:
         assignee = assignee_match.group(1)
         text = text.replace(assignee_match.group(0), '').strip()
 
-    text = text.strip()
-    if not text:
+    task_text = text.strip()
+
+    if not task_text:
         await update.message.reply_text("❌ Текст задачи не может быть пустым.")
         return
 
-    task = add_task(text, assignee, deadline, tasks_chat)
+    task = add_task(task_text, assignee, deadline, tasks_chat)
 
     if task:
         await update.message.reply_text(
