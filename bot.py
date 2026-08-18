@@ -167,13 +167,12 @@ def get_next_task_id(tasks):
     return max(t['id'] for t in tasks) + 1
 
 
-def add_task(text, assignee, assignee_id, deadline, chat_id):
+def add_task(text, assignee, deadline, chat_id):
     tasks = load_tasks()
     task = {
         'id': get_next_task_id(tasks),
         'text': text,
         'assignee': assignee,
-        'assignee_id': assignee_id,
         'deadline': deadline,
         'status': 'active',
         'created_at': datetime.now().isoformat(),
@@ -232,12 +231,7 @@ def format_tasks_list(tasks, title="📋 **Задачи:**"):
 
     lines = [title]
     for t in tasks:
-        if t.get('assignee_id'):
-            assignee = f" — <a href='tg://user?id={t['assignee_id']}'>{t['assignee']}</a>"
-        elif t.get('assignee'):
-            assignee = f" — {t['assignee']}"
-        else:
-            assignee = ""
+        assignee = f" — {t['assignee']}" if t.get('assignee') else ""
         deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
         lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
     return '\n'.join(lines)
@@ -249,12 +243,7 @@ def format_digest(active_tasks, overdue_tasks):
     if active_tasks:
         lines.append("📋 **Активные задачи:**")
         for t in active_tasks:
-            if t.get('assignee_id'):
-                assignee = f" — <a href='tg://user?id={t['assignee_id']}'>{t['assignee']}</a>"
-            elif t.get('assignee'):
-                assignee = f" — {t['assignee']}"
-            else:
-                assignee = ""
+            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
             deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
             lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
     else:
@@ -263,12 +252,7 @@ def format_digest(active_tasks, overdue_tasks):
     if overdue_tasks:
         lines.append("\n❌ **Просроченные задачи:**")
         for t in overdue_tasks:
-            if t.get('assignee_id'):
-                assignee = f" — <a href='tg://user?id={t['assignee_id']}'>{t['assignee']}</a>"
-            elif t.get('assignee'):
-                assignee = f" — {t['assignee']}"
-            else:
-                assignee = ""
+            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
             deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
             lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
 
@@ -369,8 +353,7 @@ async def send_daily_digest(app: Application = None):
         try:
             await app.bot.send_message(
                 chat_id=digest_chat,
-                text=f"🌅 **Дайджест:**\n\n{digest_text}",
-                parse_mode='HTML'
+                text=f"🌅 **Дайджест:**\n\n{digest_text}"
             )
             logger.info(f"✅ Дайджест отправлен в чат {digest_chat}")
         except Exception as e:
@@ -480,7 +463,7 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     digest_text = format_digest(active_tasks, overdue_tasks)
-    await update.message.reply_text(f"📋 **Дайджест:**\n\n{digest_text}", parse_mode='HTML')
+    await update.message.reply_text(f"📋 **Дайджест:**\n\n{digest_text}")
 
 
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -501,7 +484,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 continue
         if overdue:
-            await update.message.reply_text(format_tasks_list(overdue, "❌ **Просроченные задачи:**"), parse_mode='HTML')
+            await update.message.reply_text(format_tasks_list(overdue, "❌ **Просроченные задачи:**"))
         else:
             await update.message.reply_text("✅ Просроченных задач нет.")
         return
@@ -509,7 +492,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0].lower() == 'all':
         tasks = get_tasks_by_chat(tasks_chat)
         if tasks:
-            await update.message.reply_text(format_tasks_list(tasks, "📋 **Все задачи:**"), parse_mode='HTML')
+            await update.message.reply_text(format_tasks_list(tasks, "📋 **Все задачи:**"))
         else:
             await update.message.reply_text("❌ Задач нет.")
         return
@@ -517,7 +500,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # По умолчанию — активные задачи
     active_tasks, overdue_tasks = get_active_tasks(tasks_chat)
     if active_tasks or overdue_tasks:
-        await update.message.reply_text(format_digest(active_tasks, overdue_tasks), parse_mode='HTML')
+        await update.message.reply_text(format_digest(active_tasks, overdue_tasks))
     else:
         await update.message.reply_text("✅ Активных задач нет.")
 
@@ -593,34 +576,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = ' '.join(context.args)
+    original_text = text  # сохраняем оригинал
 
     assignee = ''
-    assignee_id = None
     deadline = ''
-
-    # Ищем исполнителя через @
-    assignee_match = re.search(r'@(\w+)', text)
-    if assignee_match:
-        username = assignee_match.group(1)
-        assignee = username
-        # Пытаемся получить user_id
-        try:
-            # Ищем пользователя по username в чате
-            chat = await context.bot.get_chat(chat_id)
-            members = await context.bot.get_chat_administrators(chat_id) if chat.type in ['group', 'supergroup'] else []
-            for member in members:
-                if member.user.username and member.user.username.lower() == username.lower():
-                    assignee_id = member.user.id
-                    break
-            # Если не нашли через администраторов, пробуем через get_chat_member
-            if not assignee_id:
-                try:
-                    member = await context.bot.get_chat_member(chat_id, f"@{username}")
-                    assignee_id = member.user.id
-                except:
-                    pass
-        except Exception as e:
-            logger.warning(f"Не удалось найти user_id для @{username}: {e}")
 
     # Ищем дату
     date_match = re.search(r'(\d{2}\.\d{2}(?:\.\d{4})?)', text)
@@ -633,30 +592,29 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deadline = deadline_obj.strftime('%Y-%m-%d')
         except:
             deadline = ''
+        # НЕ удаляем дату из текста
 
-    # Удаляем @ и дату из текста для сохранения чистого текста задачи
-    task_text = text
+    # Ищем исполнителя
+    assignee_match = re.search(r'@(\w+)', text)
     if assignee_match:
-        task_text = task_text.replace(assignee_match.group(0), '').strip()
-    if date_match:
-        task_text = task_text.replace(date_match.group(0), '').strip()
-    task_text = task_text.strip()
+        assignee = assignee_match.group(1)
+        text = text.replace(assignee_match.group(0), '').strip()
+
+    task_text = text.strip()
 
     if not task_text:
         await update.message.reply_text("❌ Текст задачи не может быть пустым.")
         return
 
-    task = add_task(task_text, assignee, assignee_id, deadline, tasks_chat)
+    task = add_task(task_text, assignee, deadline, tasks_chat)
 
     if task:
-        assignee_display = f" <a href='tg://user?id={assignee_id}'>{assignee}</a>" if assignee_id else f" {assignee}" if assignee else ""
         await update.message.reply_text(
             f"✅ Задача добавлена!\n\n"
             f"📌 {task['text']}\n"
-            f"👤 Исполнитель: {task['assignee'] or 'не указан'}{assignee_display}\n"
+            f"👤 Исполнитель: {task['assignee'] or 'не указан'}\n"
             f"📅 Срок: {task['deadline'] or 'не указан'}\n"
-            f"🆔 ID: {task['id']}",
-            parse_mode='HTML' if assignee_id else None
+            f"🆔 ID: {task['id']}"
         )
     else:
         await update.message.reply_text("❌ Ошибка при добавлении задачи.")
