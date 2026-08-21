@@ -21,6 +21,9 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 
+# ТВОЙ ЛИЧНЫЙ ID (для уведомлений)
+ADMIN_ID = 2015942051  # ЗАМЕНИ НА СВОЙ!
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -167,12 +170,13 @@ def get_next_task_id(tasks):
     return max(t['id'] for t in tasks) + 1
 
 
-def add_task(text, assignee, deadline, chat_id):
+def add_task(text, assignee, assignee_id, deadline, chat_id):
     tasks = load_tasks()
     task = {
         'id': get_next_task_id(tasks),
         'text': text,
         'assignee': assignee,
+        'assignee_id': assignee_id,
         'deadline': deadline,
         'status': 'active',
         'created_at': datetime.now().isoformat(),
@@ -260,29 +264,28 @@ def format_digest(active_tasks, overdue_tasks):
 
 
 # ============================================
-# ПОДПИСЧИКИ
+# СИСТЕМА ПОДПИСОК
 # ============================================
 
 def load_users():
     if not os.path.exists('users.json'):
-        save_users([])
-        return []
+        save_users({})
+        return {}
 
     try:
         with open('users.json', 'r', encoding='utf-8') as f:
             content = f.read().strip()
             if not content:
-                save_users([])
-                return []
+                return {}
             return json.loads(content)
     except json.JSONDecodeError:
         logger.warning("⚠️ users.json поврежден, создаю новый")
-        save_users([])
-        return []
+        save_users({})
+        return {}
     except Exception as e:
         logger.error(f"Ошибка загрузки users.json: {e}")
-        save_users([])
-        return []
+        save_users({})
+        return {}
 
 
 def save_users(users):
@@ -290,22 +293,77 @@ def save_users(users):
         json.dump(users, f, ensure_ascii=False, indent=4)
 
 
-def add_user(chat_id):
+def check_subscription(chat_id):
+    """Проверяет, активна ли подписка для чата"""
     users = load_users()
-    if chat_id not in users:
-        users.append(chat_id)
+
+    if str(chat_id) not in users:
+        return False
+
+    user_data = users[str(chat_id)]
+
+    if not user_data.get('is_active', False):
+        return False
+
+    trial_until = user_data.get('trial_until')
+    if trial_until:
+        try:
+            expiry = datetime.strptime(trial_until, '%Y-%m-%d')
+            if expiry < datetime.now():
+                return False
+        except:
+            return False
+
+    return True
+
+
+def activate_subscription(chat_id, plan='trial'):
+    """Активирует подписку для чата"""
+    users = load_users()
+
+    if str(chat_id) not in users:
+        users[str(chat_id)] = {}
+
+    users[str(chat_id)]['is_active'] = True
+    users[str(chat_id)]['plan'] = plan
+    users[str(chat_id)]['subscribed_at'] = datetime.now().strftime('%Y-%m-%d')
+
+    if plan == 'trial':
+        trial_until = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
+        users[str(chat_id)]['trial_until'] = trial_until
+    else:
+        # Для платной подписки — 30 дней
+        paid_until = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        users[str(chat_id)]['trial_until'] = paid_until
+
+    save_users(users)
+
+
+# ============================================
+# ПОДПИСЧИКИ (ДЛЯ ДАЙДЖЕСТОВ)
+# ============================================
+
+def add_digest_subscriber(chat_id):
+    users = load_users()
+    if str(chat_id) not in users:
+        users[str(chat_id)] = {}
+    users[str(chat_id)]['digest_subscribed'] = True
+    save_users(users)
+    return True
+
+
+def remove_digest_subscriber(chat_id):
+    users = load_users()
+    if str(chat_id) in users:
+        users[str(chat_id)]['digest_subscribed'] = False
         save_users(users)
         return True
     return False
 
 
-def remove_user(chat_id):
+def get_digest_subscribers():
     users = load_users()
-    if chat_id in users:
-        users.remove(chat_id)
-        save_users(users)
-        return True
-    return False
+    return [int(chat_id) for chat_id, data in users.items() if data.get('digest_subscribed', False)]
 
 
 APP_INSTANCE = None
@@ -327,12 +385,27 @@ async def send_daily_digest(app: Application = None):
         logger.error("❌ APP_INSTANCE не инициализирован")
         return
 
-    users = load_users()
+    users = get_digest_subscribers()
     if not users:
-        logger.warning("❌ Нет подписчиков!")
+        logger.warning("❌ Нет подписчиков на дайджест!")
         return
 
     for chat_id in users:
+        # Проверяем подписку
+        if not check_subscription(chat_id):
+            try:
+                await app.bot.send_message(
+                    chat_id=chat_id,
+                    text="⛔️ **Подписка истекла.**\n\n"
+                         "Чтобы продолжить получать дайджесты, оформите подписку:\n"
+                         "• 500 ₽/месяц\n\n"
+                         "📩 Для оформления напишите @ваш_контакт"
+                )
+                logger.info(f"⛔️ Отправлено уведомление об истечении подписки в чат {chat_id}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки уведомления в чат {chat_id}: {e}")
+            continue
+
         config = get_config_for_chat(chat_id)
         digest_chat = config.get('digest_chat', chat_id)
 
@@ -365,6 +438,18 @@ async def send_daily_digest(app: Application = None):
 # ============================================
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.**\n\n"
+            "Чтобы использовать бота, оформите подписку:\n"
+            "• Бесплатный пробный период — 7 дней\n"
+            "• Подписка — 500 ₽/месяц\n\n"
+            "📩 Для оформления напишите @ваш_контакт"
+        )
+        return
+
     logger.info("✅ /start")
     await update.message.reply_text(
         "👋 Привет! Я умный Хаос-менеджер.\n\n"
@@ -377,11 +462,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 **Команды:**\n"
         "/subscribe — подписаться на дайджест\n"
         "/unsubscribe — отписаться\n"
-        "/status — проверить подписку\n"
+        "/status — проверить подписку на дайджест\n"
         "/digest — получить дайджест сейчас\n"
         "/test — тестовый дайджест\n"
         "/set_tasks_chat — установить этот чат как чат для задач\n"
-        "/set_digest_chat — установить этот чат как чат для дайджестов\n\n"
+        "/set_digest_chat — установить этот чат как чат для дайджестов\n"
+        "/subscription — проверить статус подписки\n\n"
         "📋 **Управление задачами:**\n"
         "/add <текст> до <дата> @исполнитель — добавить задачу вручную\n"
         "/tasks — показать активные задачи\n"
@@ -394,6 +480,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_set_tasks_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     logger.info(f"✅ /set_tasks_chat от {chat_id}")
     set_config_for_chat(chat_id, 'tasks_chat', chat_id)
     await update.message.reply_text(
@@ -402,6 +495,13 @@ async def cmd_set_tasks_chat(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cmd_set_digest_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     logger.info(f"✅ /set_digest_chat от {chat_id}")
     set_config_for_chat(chat_id, 'digest_chat', chat_id)
     await update.message.reply_text(
@@ -410,42 +510,74 @@ async def cmd_set_digest_chat(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     logger.info(f"✅ /subscribe от {chat_id}")
-    if add_user(chat_id):
-        await update.message.reply_text("✅ Вы подписались на утренний дайджест!")
-    else:
-        await update.message.reply_text("⚠️ Вы уже подписаны!")
+    add_digest_subscriber(chat_id)
+    await update.message.reply_text("✅ Вы подписались на утренний дайджест!")
 
 
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     logger.info(f"✅ /unsubscribe от {chat_id}")
-    if remove_user(chat_id):
-        await update.message.reply_text("❌ Вы отписались от дайджеста!")
-    else:
-        await update.message.reply_text("⚠️ Вы не были подписаны!")
+    remove_digest_subscriber(chat_id)
+    await update.message.reply_text("❌ Вы отписались от дайджеста!")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     logger.info(f"✅ /status от {chat_id}")
     users = load_users()
-    if chat_id in users:
+    if users.get(str(chat_id), {}).get('digest_subscribed', False):
         await update.message.reply_text("✅ Вы **подписаны** на утренний дайджест!")
     else:
         await update.message.reply_text("❌ Вы **не подписаны** на дайджест.\nНапишите /subscribe")
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     logger.info("✅ /test")
     await update.message.reply_text("🧪 Отправляю тестовый дайджест...")
     await send_daily_digest()
 
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     logger.info("✅ /digest")
 
-    chat_id = update.message.chat_id
     config = get_config_for_chat(chat_id)
     tasks_chat = config.get('tasks_chat', chat_id)
     digest_chat = config.get('digest_chat', chat_id)
@@ -466,8 +598,73 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📋 **Дайджест:**\n\n{digest_text}")
 
 
+async def cmd_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    users = load_users()
+
+    if str(chat_id) not in users:
+        await update.message.reply_text("❌ Вы не зарегистрированы в системе.")
+        return
+
+    user_data = users[str(chat_id)]
+    is_active = user_data.get('is_active', False)
+    plan = user_data.get('plan', 'не указан')
+    trial_until = user_data.get('trial_until', 'не указана')
+
+    if is_active:
+        status = "✅ **Активна**"
+    else:
+        status = "❌ **Не активна**"
+
+    await update.message.reply_text(
+        f"📊 **Статус подписки:**\n\n"
+        f"Статус: {status}\n"
+        f"Тариф: {plan}\n"
+        f"Действует до: {trial_until}\n\n"
+        f"Для продления напишите @ваш_контакт"
+    )
+
+
+async def cmd_activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Только для администратора — активация подписки вручную"""
+    chat_id = update.message.chat_id
+
+    # Проверяем, что команду вызвал администратор
+    if chat_id != ADMIN_ID:
+        await update.message.reply_text("⛔️ У вас нет прав для выполнения этой команды.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Укажите ID чата и тариф:\n"
+            "/activate <chat_id> <trial|monthly>\n\n"
+            "Пример: /activate -100123456 trial"
+        )
+        return
+
+    try:
+        target_chat = int(context.args[0])
+        plan = context.args[1] if len(context.args) > 1 else 'trial'
+    except:
+        await update.message.reply_text("⚠️ Неверный формат. Используйте: /activate <chat_id> <trial|monthly>")
+        return
+
+    activate_subscription(target_chat, plan)
+    await update.message.reply_text(
+        f"✅ Подписка активирована для чата {target_chat}\n"
+        f"📌 Тариф: {plan}"
+    )
+
+
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     config = get_config_for_chat(chat_id)
     tasks_chat = config.get('tasks_chat', chat_id)
 
@@ -507,6 +704,13 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     config = get_config_for_chat(chat_id)
     tasks_chat = config.get('tasks_chat', chat_id)
 
@@ -533,6 +737,13 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     config = get_config_for_chat(chat_id)
     tasks_chat = config.get('tasks_chat', chat_id)
 
@@ -559,6 +770,13 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
+    if not check_subscription(chat_id):
+        await update.message.reply_text(
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+        )
+        return
+
     config = get_config_for_chat(chat_id)
     tasks_chat = config.get('tasks_chat', chat_id)
 
@@ -576,10 +794,33 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = ' '.join(context.args)
-    original_text = text  # сохраняем оригинал
 
     assignee = ''
+    assignee_id = None
     deadline = ''
+
+    # Ищем исполнителя через @
+    assignee_match = re.search(r'@(\w+)', text)
+    if assignee_match:
+        username = assignee_match.group(1)
+        assignee = username
+
+        try:
+            # Пробуем найти user_id
+            admins = await context.bot.get_chat_administrators(chat_id)
+            for admin in admins:
+                if admin.user.username and admin.user.username.lower() == username.lower():
+                    assignee_id = admin.user.id
+                    break
+
+            if not assignee_id:
+                try:
+                    member = await context.bot.get_chat_member(chat_id, f"@{username}")
+                    assignee_id = member.user.id
+                except Exception as e:
+                    logger.warning(f"Не удалось найти @{username} через get_chat_member: {e}")
+        except Exception as e:
+            logger.warning(f"Ошибка при поиске пользователя @{username}: {e}")
 
     # Ищем дату
     date_match = re.search(r'(\d{2}\.\d{2}(?:\.\d{4})?)', text)
@@ -592,32 +833,74 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deadline = deadline_obj.strftime('%Y-%m-%d')
         except:
             deadline = ''
-        # НЕ удаляем дату из текста
 
-    # Ищем исполнителя
-    assignee_match = re.search(r'@(\w+)', text)
+    # Удаляем @ и дату из текста
+    task_text = text
     if assignee_match:
-        assignee = assignee_match.group(1)
-        text = text.replace(assignee_match.group(0), '').strip()
-
-    task_text = text.strip()
+        task_text = task_text.replace(assignee_match.group(0), '').strip()
+    if date_match:
+        task_text = task_text.replace(date_match.group(0), '').strip()
+    task_text = task_text.strip()
 
     if not task_text:
         await update.message.reply_text("❌ Текст задачи не может быть пустым.")
         return
 
-    task = add_task(task_text, assignee, deadline, tasks_chat)
+    task = add_task(task_text, assignee, assignee_id, deadline, tasks_chat)
 
     if task:
+        assignee_display = f" <a href='tg://user?id={assignee_id}'>{assignee}</a>" if assignee_id else f" {assignee}" if assignee else ""
         await update.message.reply_text(
             f"✅ Задача добавлена!\n\n"
             f"📌 {task['text']}\n"
-            f"👤 Исполнитель: {task['assignee'] or 'не указан'}\n"
+            f"👤 Исполнитель: {task['assignee'] or 'не указан'}{assignee_display}\n"
             f"📅 Срок: {task['deadline'] or 'не указан'}\n"
-            f"🆔 ID: {task['id']}"
+            f"🆔 ID: {task['id']}",
+            parse_mode='HTML' if assignee_id else None
         )
     else:
         await update.message.reply_text("❌ Ошибка при добавлении задачи.")
+
+
+# ============================================
+# ОБРАБОТЧИК НОВОГО УЧАСТНИКА (БОТ ДОБАВЛЕН В ЧАТ)
+# ============================================
+
+async def handle_new_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message and update.message.new_chat_members:
+        for member in update.message.new_chat_members:
+            if member.id == context.bot.id:
+                chat_id = update.message.chat_id
+                chat_title = update.message.chat.title or "Личный чат"
+                user = update.message.from_user
+                user_name = user.first_name or "Unknown"
+                username = f"@{user.username}" if user.username else "нет"
+
+                # Активируем пробный период
+                activate_subscription(chat_id, 'trial')
+                add_digest_subscriber(chat_id)
+
+                # Отправляем уведомление админу
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=f"🆕 **Новый пользователь активировал пробный период!**\n\n"
+                         f"📌 Чат: {chat_title}\n"
+                         f"🆔 ID: `{chat_id}`\n"
+                         f"👤 Кто добавил: {user_name} ({username})\n"
+                         f"📅 Пробный период до: {(datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')}"
+                )
+
+                # Приветствие в чате
+                await update.message.reply_text(
+                    "👋 Привет! Я умный Хаос-менеджер.\n\n"
+                    "🎉 **У вас активирован бесплатный пробный период на 7 дней!**\n\n"
+                    "Чтобы начать использовать меня, выполните команды:\n"
+                    "/set_tasks_chat — в этом чате будут задачи\n"
+                    "/set_digest_chat — в этом чате будут дайджесты\n"
+                    "/subscribe — подписаться на утренний дайджест\n\n"
+                    "📌 Подробнее — /start\n\n"
+                    "📩 Для оформления платной подписки напишите @ваш_контакт"
+                )
 
 
 # ============================================
@@ -631,6 +914,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
         chat_id = update.message.chat_id
         chat_type = update.message.chat.type
+
+        # Проверяем подписку, но пропускаем команды (они обрабатываются отдельно)
+        if not text.startswith('/') and not check_subscription(chat_id):
+            await update.message.reply_text(
+                "⛔️ **Доступ ограничен.**\n\n"
+                "Чтобы использовать бота, оформите подписку:\n"
+                "• Бесплатный пробный период — 7 дней\n"
+                "• Подписка — 500 ₽/месяц\n\n"
+                "📩 Для оформления напишите @ваш_контакт"
+            )
+            return
 
         logger.info(
             f"🔍 ВИЖУ СООБЩЕНИЕ: от {user_name} (ID: {user_id}) в чате {chat_id} (тип: {chat_type}): {text[:50]}...")
@@ -656,6 +950,7 @@ def main():
     app = Application.builder().token(TOKEN).request(request).build()
     APP_INSTANCE = app
 
+    # Команды
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("subscribe", cmd_subscribe))
     app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
@@ -668,9 +963,14 @@ def main():
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("delete", cmd_delete))
     app.add_handler(CommandHandler("add", cmd_add))
+    app.add_handler(CommandHandler("subscription", cmd_subscription))
+    app.add_handler(CommandHandler("activate", cmd_activate))  # Только для админа
 
+    # Обработчики
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_chat_member))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    # Планировщик
     scheduler = BackgroundScheduler()
 
     loop = asyncio.get_event_loop()
@@ -694,7 +994,7 @@ def main():
     print("   /start - приветствие")
     print("   /subscribe - подписаться на дайджест")
     print("   /unsubscribe - отписаться")
-    print("   /status - проверить подписку")
+    print("   /status - проверить подписку на дайджест")
     print("   /test - тестовый дайджест")
     print("   /digest - получить дайджест сейчас")
     print("   /set_tasks_chat - установить текущий чат как чат для задач")
@@ -705,6 +1005,8 @@ def main():
     print("   /tasks all - показать все задачи")
     print("   /done <id> - отметить задачу выполненной")
     print("   /delete <id> - удалить задачу")
+    print("   /subscription - проверить статус подписки")
+    print("   /activate - активировать подписку (только для админа)")
 
     app.run_polling()
 
