@@ -22,7 +22,7 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 
 # ТВОЙ ЛИЧНЫЙ ID (для уведомлений)
-ADMIN_ID = 2015942051  # ЗАМЕНИ НА СВОЙ!
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,6 +105,8 @@ def save_message(chat_id, user_name, text):
         'text': text,
         'time': datetime.now().isoformat()
     })
+
+    messages = messages[-100:]  # Оставляем только последние 100 сообщений
 
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(messages, f, ensure_ascii=False, indent=4)

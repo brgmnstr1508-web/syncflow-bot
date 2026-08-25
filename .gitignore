@@ -1,0 +1,28 @@
+# --- Секреты и переменные окружения ---
+.env
+.env.local
+
+# --- Виртуальное окружение Python ---
+venv/
+env/
+.venv/
+pyvenv.cfg
+
+# --- Кэш Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Настройки IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Файлы данных (если они не должны быть в git) ---
+messages.json
+users.json
+
+# --- Системные файлы ---
+.DS_Store
+Thumbs.db
