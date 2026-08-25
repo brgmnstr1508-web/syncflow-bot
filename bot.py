@@ -15,13 +15,20 @@ from gigachat.models import Chat, Messages, MessagesRole
 import asyncio
 import re
 
+# Импортируем функции для работы с задачами из database.py
+from database import (
+    load_tasks, save_tasks, add_task, get_tasks_by_chat,
+    get_active_tasks, complete_task, delete_task,
+    format_tasks_list, format_digest
+)
+
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 
-# ТВОЙ ЛИЧНЫЙ ID (для уведомлений)
+# ТВОЙ ЛИЧНЫЙ ID (теперь берется из .env)
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 logging.basicConfig(
@@ -47,7 +54,6 @@ giga = GigaChat(
 
 CONFIG_FILE = "config.json"
 
-
 def load_config():
     if not os.path.exists(CONFIG_FILE):
         return {}
@@ -60,16 +66,13 @@ def load_config():
     except:
         return {}
 
-
 def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=4)
 
-
 def get_config_for_chat(chat_id):
     config = load_config()
     return config.get(str(chat_id), {})
-
 
 def set_config_for_chat(chat_id, key, value):
     config = load_config()
@@ -78,14 +81,12 @@ def set_config_for_chat(chat_id, key, value):
     config[str(chat_id)][key] = value
     save_config(config)
 
-
 # ============================================
-# БАЗА ДАННЫХ (РАЗДЕЛЬНО ПО ЧАТАМ)
+# БАЗА ДАННЫХ СООБЩЕНИЙ (РАЗДЕЛЬНО ПО ЧАТАМ)
 # ============================================
 
 def get_messages_file(chat_id):
     return f"messages_{chat_id}.json"
-
 
 def save_message(chat_id, user_name, text):
     filename = get_messages_file(chat_id)
@@ -106,11 +107,11 @@ def save_message(chat_id, user_name, text):
         'time': datetime.now().isoformat()
     })
 
-    messages = messages[-100:]  # Оставляем только последние 100 сообщений
+    # Оставляем только последние 100 сообщений, чтобы файл не разросся
+    messages = messages[-100:]
 
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(messages, f, ensure_ascii=False, indent=4)
-
 
 def get_recent_messages(chat_id, hours=24):
     filename = get_messages_file(chat_id)
@@ -140,131 +141,6 @@ def get_recent_messages(chat_id, hours=24):
 
     return recent
 
-
-# ============================================
-# СИСТЕМА ЗАДАЧ
-# ============================================
-
-TASKS_FILE = "tasks.json"
-
-
-def load_tasks():
-    if not os.path.exists(TASKS_FILE):
-        return []
-    try:
-        with open(TASKS_FILE, 'r', encoding='utf-8') as f:
-            content = f.read().strip()
-            if not content:
-                return []
-            return json.loads(content)
-    except:
-        return []
-
-
-def save_tasks(tasks):
-    with open(TASKS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(tasks, f, ensure_ascii=False, indent=4)
-
-
-def get_next_task_id(tasks):
-    if not tasks:
-        return 1
-    return max(t['id'] for t in tasks) + 1
-
-
-def add_task(text, assignee, assignee_id, deadline, chat_id):
-    tasks = load_tasks()
-    task = {
-        'id': get_next_task_id(tasks),
-        'text': text,
-        'assignee': assignee,
-        'assignee_id': assignee_id,
-        'deadline': deadline,
-        'status': 'active',
-        'created_at': datetime.now().isoformat(),
-        'chat_id': chat_id
-    }
-    tasks.append(task)
-    save_tasks(tasks)
-    return task
-
-
-def get_tasks_by_chat(chat_id, status=None):
-    tasks = load_tasks()
-    filtered = [t for t in tasks if t.get('chat_id') == chat_id]
-    if status:
-        filtered = [t for t in filtered if t.get('status') == status]
-    return filtered
-
-
-def get_active_tasks(chat_id):
-    tasks = get_tasks_by_chat(chat_id, 'active')
-    today = datetime.now().date()
-    active = []
-    overdue = []
-    for t in tasks:
-        try:
-            deadline = datetime.strptime(t['deadline'], '%Y-%m-%d').date()
-            if deadline < today:
-                overdue.append(t)
-            else:
-                active.append(t)
-        except:
-            active.append(t)
-    return active, overdue
-
-
-def complete_task(task_id):
-    tasks = load_tasks()
-    for t in tasks:
-        if t['id'] == task_id:
-            t['status'] = 'done'
-            save_tasks(tasks)
-            return True
-    return False
-
-
-def delete_task(task_id):
-    tasks = load_tasks()
-    tasks = [t for t in tasks if t['id'] != task_id]
-    save_tasks(tasks)
-    return True
-
-
-def format_tasks_list(tasks, title="📋 **Задачи:**"):
-    if not tasks:
-        return "❌ Задач нет."
-
-    lines = [title]
-    for t in tasks:
-        assignee = f" — {t['assignee']}" if t.get('assignee') else ""
-        deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
-        lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
-    return '\n'.join(lines)
-
-
-def format_digest(active_tasks, overdue_tasks):
-    lines = []
-
-    if active_tasks:
-        lines.append("📋 **Активные задачи:**")
-        for t in active_tasks:
-            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
-            deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
-            lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
-    else:
-        lines.append("✅ Активных задач нет.")
-
-    if overdue_tasks:
-        lines.append("\n❌ **Просроченные задачи:**")
-        for t in overdue_tasks:
-            assignee = f" — {t['assignee']}" if t.get('assignee') else ""
-            deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
-            lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
-
-    return '\n'.join(lines)
-
-
 # ============================================
 # СИСТЕМА ПОДПИСОК
 # ============================================
@@ -289,11 +165,9 @@ def load_users():
         save_users({})
         return {}
 
-
 def save_users(users):
     with open('users.json', 'w', encoding='utf-8') as f:
         json.dump(users, f, ensure_ascii=False, indent=4)
-
 
 def check_subscription(chat_id):
     """Проверяет, активна ли подписка для чата"""
@@ -318,7 +192,6 @@ def check_subscription(chat_id):
 
     return True
 
-
 def activate_subscription(chat_id, plan='trial'):
     """Активирует подписку для чата"""
     users = load_users()
@@ -340,7 +213,6 @@ def activate_subscription(chat_id, plan='trial'):
 
     save_users(users)
 
-
 # ============================================
 # ПОДПИСЧИКИ (ДЛЯ ДАЙДЖЕСТОВ)
 # ============================================
@@ -353,7 +225,6 @@ def add_digest_subscriber(chat_id):
     save_users(users)
     return True
 
-
 def remove_digest_subscriber(chat_id):
     users = load_users()
     if str(chat_id) in users:
@@ -362,14 +233,11 @@ def remove_digest_subscriber(chat_id):
         return True
     return False
 
-
 def get_digest_subscribers():
     users = load_users()
     return [int(chat_id) for chat_id, data in users.items() if data.get('digest_subscribed', False)]
 
-
 APP_INSTANCE = None
-
 
 # ============================================
 # ОТПРАВКА ДАЙДЖЕСТА
@@ -417,7 +285,7 @@ async def send_daily_digest(app: Application = None):
             try:
                 await app.bot.send_message(
                     chat_id=digest_chat,
-                    text="🌅 **Доброе утро!**\n\nАктивных задач нет. Отличная работа! 🎉"
+                    text="🌅 **Доброе утро!**\n\nАктивных задач нет. Отличная работа! "
                 )
                 logger.info(f"✅ Отправлено сообщение об отсутствии задач в чат {digest_chat}")
             except Exception as e:
@@ -434,7 +302,6 @@ async def send_daily_digest(app: Application = None):
         except Exception as e:
             logger.error(f"❌ Ошибка отправки в чат {digest_chat}: {e}")
 
-
 # ============================================
 # КОМАНДЫ
 # ============================================
@@ -444,7 +311,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not check_subscription(chat_id):
         await update.message.reply_text(
-            "⛔️ **Доступ ограничен.**\n\n"
+            "️ **Доступ ограничен.**\n\n"
             "Чтобы использовать бота, оформите подписку:\n"
             "• Бесплатный пробный период — 7 дней\n"
             "• Подписка — 500 ₽/месяц\n\n"
@@ -479,13 +346,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/delete <id> — удалить задачу"
     )
 
-
 async def cmd_set_tasks_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
 
     if not check_subscription(chat_id):
         await update.message.reply_text(
-            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+            "️ **Доступ ограничен.** Оформите подписку для использования бота."
         )
         return
 
@@ -493,7 +359,6 @@ async def cmd_set_tasks_chat(update: Update, context: ContextTypes.DEFAULT_TYPE)
     set_config_for_chat(chat_id, 'tasks_chat', chat_id)
     await update.message.reply_text(
         "✅ Этот чат установлен как **чат для задач**. Теперь бот будет читать сообщения только отсюда.")
-
 
 async def cmd_set_digest_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -509,7 +374,6 @@ async def cmd_set_digest_chat(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         "✅ Этот чат установлен как **чат для дайджестов**. Теперь дайджесты будут приходить сюда.")
 
-
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
 
@@ -523,7 +387,6 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_digest_subscriber(chat_id)
     await update.message.reply_text("✅ Вы подписались на утренний дайджест!")
 
-
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
 
@@ -536,7 +399,6 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"✅ /unsubscribe от {chat_id}")
     remove_digest_subscriber(chat_id)
     await update.message.reply_text("❌ Вы отписались от дайджеста!")
-
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -554,7 +416,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Вы **не подписаны** на дайджест.\nНапишите /subscribe")
 
-
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
 
@@ -567,7 +428,6 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("✅ /test")
     await update.message.reply_text("🧪 Отправляю тестовый дайджест...")
     await send_daily_digest()
-
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -599,7 +459,6 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     digest_text = format_digest(active_tasks, overdue_tasks)
     await update.message.reply_text(f"📋 **Дайджест:**\n\n{digest_text}")
 
-
 async def cmd_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     users = load_users()
@@ -625,7 +484,6 @@ async def cmd_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Действует до: {trial_until}\n\n"
         f"Для продления напишите @ваш_контакт"
     )
-
 
 async def cmd_activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Только для администратора — активация подписки вручную"""
@@ -656,7 +514,6 @@ async def cmd_activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Подписка активирована для чата {target_chat}\n"
         f"📌 Тариф: {plan}"
     )
-
 
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -703,7 +560,6 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("✅ Активных задач нет.")
 
-
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
 
@@ -736,7 +592,6 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     complete_task(task_id)
     await update.message.reply_text(f"✅ Задача {task_id} отмечена как выполненная!")
 
-
 async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
 
@@ -756,7 +611,7 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         task_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("⚠️ ID должен быть числом.")
+        await update.message.reply_text("️ ID должен быть числом.")
         return
 
     tasks = load_tasks()
@@ -768,7 +623,6 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     delete_task(task_id)
     await update.message.reply_text(f"🗑️ Задача {task_id} удалена.")
-
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -856,13 +710,12 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Задача добавлена!\n\n"
             f"📌 {task['text']}\n"
             f"👤 Исполнитель: {task['assignee'] or 'не указан'}{assignee_display}\n"
-            f"📅 Срок: {task['deadline'] or 'не указан'}\n"
+            f" Срок: {task['deadline'] or 'не указан'}\n"
             f"🆔 ID: {task['id']}",
             parse_mode='HTML' if assignee_id else None
         )
     else:
         await update.message.reply_text("❌ Ошибка при добавлении задачи.")
-
 
 # ============================================
 # ОБРАБОТЧИК НОВОГО УЧАСТНИКА (БОТ ДОБАВЛЕН В ЧАТ)
@@ -887,9 +740,9 @@ async def handle_new_chat_member(update: Update, context: ContextTypes.DEFAULT_T
                     chat_id=ADMIN_ID,
                     text=f"🆕 **Новый пользователь активировал пробный период!**\n\n"
                          f"📌 Чат: {chat_title}\n"
-                         f"🆔 ID: `{chat_id}`\n"
+                         f" ID: `{chat_id}`\n"
                          f"👤 Кто добавил: {user_name} ({username})\n"
-                         f"📅 Пробный период до: {(datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')}"
+                         f" Пробный период до: {(datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')}"
                 )
 
                 # Приветствие в чате
@@ -903,7 +756,6 @@ async def handle_new_chat_member(update: Update, context: ContextTypes.DEFAULT_T
                     "📌 Подробнее — /start\n\n"
                     "📩 Для оформления платной подписки напишите @ваш_контакт"
                 )
-
 
 # ============================================
 # ОБРАБОТЧИК ТЕКСТА
@@ -934,7 +786,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not text.startswith('/'):
             save_message(chat_id, user_name, text)
             logger.info(f"📩 Сохранено в БД: {user_name}: {text[:50]}...")
-
 
 # ============================================
 # ЗАПУСК
@@ -1011,7 +862,6 @@ def main():
     print("   /activate - активировать подписку (только для админа)")
 
     app.run_polling()
-
 
 if __name__ == '__main__':
     main()
