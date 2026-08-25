@@ -11,15 +11,16 @@ from telegram.request import HTTPXRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 from gigachat import GigaChat
-from gigachat.models import Chat, Messages, MessagesRole
 import asyncio
 import re
 
-# Импортируем функции для работы с задачами из database.py
+# Импортируем ВСЕ функции для работы с данными из database.py
 from database import (
     load_tasks, save_tasks, add_task, get_tasks_by_chat,
     get_active_tasks, complete_task, delete_task,
-    format_tasks_list, format_digest
+    format_tasks_list, format_digest,
+    load_users, save_users, check_subscription, activate_subscription,
+    add_digest_subscriber, remove_digest_subscriber, get_digest_subscribers
 )
 
 load_dotenv()
@@ -142,106 +143,10 @@ def get_recent_messages(chat_id, hours=24):
     return recent
 
 # ============================================
-# СИСТЕМА ПОДПИСОК
-# ============================================
-
-def load_users():
-    if not os.path.exists('users.json'):
-        save_users({})
-        return {}
-
-    try:
-        with open('users.json', 'r', encoding='utf-8') as f:
-            content = f.read().strip()
-            if not content:
-                return {}
-            return json.loads(content)
-    except json.JSONDecodeError:
-        logger.warning("⚠️ users.json поврежден, создаю новый")
-        save_users({})
-        return {}
-    except Exception as e:
-        logger.error(f"Ошибка загрузки users.json: {e}")
-        save_users({})
-        return {}
-
-def save_users(users):
-    with open('users.json', 'w', encoding='utf-8') as f:
-        json.dump(users, f, ensure_ascii=False, indent=4)
-
-def check_subscription(chat_id):
-    """Проверяет, активна ли подписка для чата"""
-    users = load_users()
-
-    if str(chat_id) not in users:
-        return False
-
-    user_data = users[str(chat_id)]
-
-    if not user_data.get('is_active', False):
-        return False
-
-    trial_until = user_data.get('trial_until')
-    if trial_until:
-        try:
-            expiry = datetime.strptime(trial_until, '%Y-%m-%d')
-            if expiry < datetime.now():
-                return False
-        except:
-            return False
-
-    return True
-
-def activate_subscription(chat_id, plan='trial'):
-    """Активирует подписку для чата"""
-    users = load_users()
-
-    if str(chat_id) not in users:
-        users[str(chat_id)] = {}
-
-    users[str(chat_id)]['is_active'] = True
-    users[str(chat_id)]['plan'] = plan
-    users[str(chat_id)]['subscribed_at'] = datetime.now().strftime('%Y-%m-%d')
-
-    if plan == 'trial':
-        trial_until = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
-        users[str(chat_id)]['trial_until'] = trial_until
-    else:
-        # Для платной подписки — 30 дней
-        paid_until = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-        users[str(chat_id)]['trial_until'] = paid_until
-
-    save_users(users)
-
-# ============================================
-# ПОДПИСЧИКИ (ДЛЯ ДАЙДЖЕСТОВ)
-# ============================================
-
-def add_digest_subscriber(chat_id):
-    users = load_users()
-    if str(chat_id) not in users:
-        users[str(chat_id)] = {}
-    users[str(chat_id)]['digest_subscribed'] = True
-    save_users(users)
-    return True
-
-def remove_digest_subscriber(chat_id):
-    users = load_users()
-    if str(chat_id) in users:
-        users[str(chat_id)]['digest_subscribed'] = False
-        save_users(users)
-        return True
-    return False
-
-def get_digest_subscribers():
-    users = load_users()
-    return [int(chat_id) for chat_id, data in users.items() if data.get('digest_subscribed', False)]
-
-APP_INSTANCE = None
-
-# ============================================
 # ОТПРАВКА ДАЙДЖЕСТА
 # ============================================
+
+APP_INSTANCE = None
 
 async def send_daily_digest(app: Application = None):
     global APP_INSTANCE
@@ -271,7 +176,7 @@ async def send_daily_digest(app: Application = None):
                          "• 500 ₽/месяц\n\n"
                          "📩 Для оформления напишите @ваш_контакт"
                 )
-                logger.info(f"⛔️ Отправлено уведомление об истечении подписки в чат {chat_id}")
+                logger.info(f"️ Отправлено уведомление об истечении подписки в чат {chat_id}")
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки уведомления в чат {chat_id}: {e}")
             continue
@@ -311,7 +216,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not check_subscription(chat_id):
         await update.message.reply_text(
-            "️ **Доступ ограничен.**\n\n"
+            "⛔️ **Доступ ограничен.**\n\n"
             "Чтобы использовать бота, оформите подписку:\n"
             "• Бесплатный пробный период — 7 дней\n"
             "• Подписка — 500 ₽/месяц\n\n"
@@ -337,7 +242,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set_tasks_chat — установить этот чат как чат для задач\n"
         "/set_digest_chat — установить этот чат как чат для дайджестов\n"
         "/subscription — проверить статус подписки\n\n"
-        "📋 **Управление задачами:**\n"
+        " **Управление задачами:**\n"
         "/add <текст> до <дата> @исполнитель — добавить задачу вручную\n"
         "/tasks — показать активные задачи\n"
         "/tasks overdue — показать просроченные задачи\n"
@@ -351,7 +256,7 @@ async def cmd_set_tasks_chat(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if not check_subscription(chat_id):
         await update.message.reply_text(
-            "️ **Доступ ограничен.** Оформите подписку для использования бота."
+            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
         )
         return
 
@@ -379,7 +284,7 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not check_subscription(chat_id):
         await update.message.reply_text(
-            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+            "️ **Доступ ограничен.** Оформите подписку для использования бота."
         )
         return
 
@@ -550,7 +455,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if tasks:
             await update.message.reply_text(format_tasks_list(tasks, "📋 **Все задачи:**"))
         else:
-            await update.message.reply_text("❌ Задач нет.")
+            await update.message.reply_text(" Задач нет.")
         return
 
     # По умолчанию — активные задачи
@@ -565,7 +470,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not check_subscription(chat_id):
         await update.message.reply_text(
-            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+            "️ **Доступ ограничен.** Оформите подписку для использования бота."
         )
         return
 
@@ -605,13 +510,13 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tasks_chat = config.get('tasks_chat', chat_id)
 
     if not context.args:
-        await update.message.reply_text("⚠️ Укажите ID задачи: `/delete 3`")
+        await update.message.reply_text("️ Укажите ID задачи: `/delete 3`")
         return
 
     try:
         task_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("️ ID должен быть числом.")
+        await update.message.reply_text("⚠️ ID должен быть числом.")
         return
 
     tasks = load_tasks()
@@ -629,7 +534,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not check_subscription(chat_id):
         await update.message.reply_text(
-            "⛔️ **Доступ ограничен.** Оформите подписку для использования бота."
+            "️ **Доступ ограничен.** Оформите подписку для использования бота."
         )
         return
 
@@ -710,7 +615,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Задача добавлена!\n\n"
             f"📌 {task['text']}\n"
             f"👤 Исполнитель: {task['assignee'] or 'не указан'}{assignee_display}\n"
-            f" Срок: {task['deadline'] or 'не указан'}\n"
+            f"📅 Срок: {task['deadline'] or 'не указан'}\n"
             f"🆔 ID: {task['id']}",
             parse_mode='HTML' if assignee_id else None
         )
@@ -740,14 +645,14 @@ async def handle_new_chat_member(update: Update, context: ContextTypes.DEFAULT_T
                     chat_id=ADMIN_ID,
                     text=f"🆕 **Новый пользователь активировал пробный период!**\n\n"
                          f"📌 Чат: {chat_title}\n"
-                         f" ID: `{chat_id}`\n"
+                         f"🆔 ID: `{chat_id}`\n"
                          f"👤 Кто добавил: {user_name} ({username})\n"
-                         f" Пробный период до: {(datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')}"
+                         f"📅 Пробный период до: {(datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')}"
                 )
 
                 # Приветствие в чате
                 await update.message.reply_text(
-                    "👋 Привет! Я умный Хаос-менеджер.\n\n"
+                    " Привет! Я умный Хаос-менеджер.\n\n"
                     "🎉 **У вас активирован бесплатный пробный период на 7 дней!**\n\n"
                     "Чтобы начать использовать меня, выполните команды:\n"
                     "/set_tasks_chat — в этом чате будут задачи\n"
@@ -776,7 +681,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Чтобы использовать бота, оформите подписку:\n"
                 "• Бесплатный пробный период — 7 дней\n"
                 "• Подписка — 500 ₽/месяц\n\n"
-                "📩 Для оформления напишите @ваш_контакт"
+                " Для оформления напишите @ваш_контакт"
             )
             return
 
@@ -842,7 +747,7 @@ def main():
 
     scheduler.start()
 
-    print("🚀 Бот SyncFlow с GigaChat запущен!")
+    print(" Бот SyncFlow с GigaChat запущен!")
     print("📌 Команды:")
     print("   /start - приветствие")
     print("   /subscribe - подписаться на дайджест")
