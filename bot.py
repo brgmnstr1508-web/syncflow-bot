@@ -220,7 +220,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Чтобы использовать бота, оформите подписку:\n"
             "• Бесплатный пробный период — 7 дней\n"
             "• Подписка — 500 ₽/месяц\n\n"
-            "📩 Для оформления напишите @ваш_контакт"
+            "📩 Для оформления напишите @Brgmnstrr"
         )
         return
 
@@ -387,7 +387,7 @@ async def cmd_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Статус: {status}\n"
         f"Тариф: {plan}\n"
         f"Действует до: {trial_until}\n\n"
-        f"Для продления напишите @ваш_контакт"
+        f"Для продления напишите @Brgmnstrr"
     )
 
 async def cmd_activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -659,7 +659,7 @@ async def handle_new_chat_member(update: Update, context: ContextTypes.DEFAULT_T
                     "/set_digest_chat — в этом чате будут дайджесты\n"
                     "/subscribe — подписаться на утренний дайджест\n\n"
                     "📌 Подробнее — /start\n\n"
-                    "📩 Для оформления платной подписки напишите @ваш_контакт"
+                    "📩 Для оформления платной подписки напишите @Brgmnstrr"
                 )
 
 # ============================================
@@ -681,7 +681,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Чтобы использовать бота, оформите подписку:\n"
                 "• Бесплатный пробный период — 7 дней\n"
                 "• Подписка — 500 ₽/месяц\n\n"
-                " Для оформления напишите @ваш_контакт"
+                " Для оформления напишите @Brgmnstrr"
             )
             return
 
