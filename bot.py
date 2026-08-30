@@ -595,12 +595,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             deadline = ''
 
-    # Удаляем @ и дату из текста
+        # Удаляем только @username из текста, дату оставляем
     task_text = text
     if assignee_match:
         task_text = task_text.replace(assignee_match.group(0), '').strip()
-    if date_match:
-        task_text = task_text.replace(date_match.group(0), '').strip()
     task_text = task_text.strip()
 
     if not task_text:
