@@ -610,14 +610,9 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task = add_task(task_text, assignee, assignee_id, deadline, tasks_chat)
 
     if task:
-        assignee_display = f" <a href='tg://user?id={assignee_id}'>{assignee}</a>" if assignee_id else f" {assignee}" if assignee else ""
         await update.message.reply_text(
-            f"✅ Задача добавлена!\n\n"
-            f"📌 {task['text']}\n"
-            f"👤 Исполнитель: {task['assignee'] or 'не указан'}{assignee_display}\n"
-            f"📅 Срок: {task['deadline'] or 'не указан'}\n"
-            f"🆔 ID: {task['id']}",
-            parse_mode='HTML' if assignee_id else None
+            f"✅ Задача добавлена!\n"
+            f"📌 {task['text']}"
         )
     else:
         await update.message.reply_text("❌ Ошибка при добавлении задачи.")
