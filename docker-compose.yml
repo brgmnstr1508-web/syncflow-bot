@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    container_name: syncflow-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4

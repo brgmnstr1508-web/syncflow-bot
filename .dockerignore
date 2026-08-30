@@ -1,0 +1,21 @@
+# Виртуальное окружение
+.venv
+venv
+env
+
+# Настройки IDE
+.idea
+.vscode
+
+# Системные файлы
+.DS_Store
+__pycache__
+
+# Git
+.git
+
+# Локальные файлы данных (чтобы не перезаписывать их при сборке)
+users.json
+tasks.json
+config.json
+messages_*.json
