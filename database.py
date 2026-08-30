@@ -83,15 +83,15 @@ def delete_task(task_id):
     save_tasks(tasks)
     return True
 
-def format_tasks_list(tasks, title=" **Задачи:**"):
+
+def format_tasks_list(tasks, title="📋 **Задачи:**"):
     if not tasks:
         return "❌ Задач нет."
 
     lines = [title]
     for t in tasks:
         assignee = f" — {t['assignee']}" if t.get('assignee') else ""
-        deadline = f" (до {t['deadline']})" if t.get('deadline') else ""
-        lines.append(f"{t['id']}. {t['text']}{assignee}{deadline}")
+        lines.append(f"{t['id']}. {t['text']}{assignee}")
     return '\n'.join(lines)
 
 def format_digest(active_tasks, overdue_tasks):
